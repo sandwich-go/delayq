@@ -15,6 +15,10 @@ type Options struct {
 	RetryTimes int
 	// annotation@OnDeadLetter(comment="当有死信")
 	OnDeadLetter func(item *Item)
+	// annotation@MonitorEnable(comment="是否打开监控")
+	MonitorEnable bool
+	// annotation@MonitorNamespace(comment="监控的域名")
+	MonitorNamespace string
 }
 
 // newConfig new Options
@@ -67,6 +71,20 @@ func WithOnDeadLetter(v func(item *Item)) Option {
 	}
 }
 
+// WithMonitorEnable 是否打开监控
+func WithMonitorEnable(v bool) Option {
+	return func(cc *Options) {
+		cc.MonitorEnable = v
+	}
+}
+
+// WithMonitorNamespace 监控的域名
+func WithMonitorNamespace(v string) Option {
+	return func(cc *Options) {
+		cc.MonitorNamespace = v
+	}
+}
+
 // InstallOptionsWatchDog the installed func will called when newConfig  called
 func InstallOptionsWatchDog(dog func(cc *Options)) { watchDogOptions = dog }
 
@@ -84,6 +102,8 @@ func newDefaultOptions() *Options {
 		WithOnDeadLetter(func(item *Item) {
 			fmt.Println("got dead letter, ", item)
 		}),
+		WithMonitorEnable(true),
+		WithMonitorNamespace("delayq"),
 	} {
 		opt(cc)
 	}
@@ -96,6 +116,8 @@ func (cc *Options) GetPrefix() string                         { return cc.Prefix
 func (cc *Options) GetRedisScriptBuilder() RedisScriptBuilder { return cc.RedisScriptBuilder }
 func (cc *Options) GetRetryTimes() int                        { return cc.RetryTimes }
 func (cc *Options) GetOnDeadLetter() func(item *Item)         { return cc.OnDeadLetter }
+func (cc *Options) GetMonitorEnable() bool                    { return cc.MonitorEnable }
+func (cc *Options) GetMonitorNamespace() string               { return cc.MonitorNamespace }
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
@@ -103,6 +125,8 @@ type OptionsVisitor interface {
 	GetRedisScriptBuilder() RedisScriptBuilder
 	GetRetryTimes() int
 	GetOnDeadLetter() func(item *Item)
+	GetMonitorEnable() bool
+	GetMonitorNamespace() string
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options

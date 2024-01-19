@@ -3,7 +3,7 @@ package delayq
 import (
 	"context"
 	"fmt"
-	"github.com/rs/xid"
+	"github.com/sandwich-go/logbus"
 	"math"
 	"sync"
 	"time"
@@ -41,6 +41,7 @@ type baseQueue struct {
 	ctx     context.Context
 	topic   string
 	opts    *Options
+	monitor monitor
 	handle  safeHandleItemFunc
 	failed  safeHandleItemFunc
 	success safeHandleItemFunc
@@ -48,6 +49,13 @@ type baseQueue struct {
 	wg      sync.WaitGroup
 	exitC   chan struct{}
 	started atomicInt32
+}
+
+func (q *baseQueue) monitorCount(metric string, value int64, labels map[string]string) {
+	if q.monitor == nil {
+		return
+	}
+	q.monitor.Count(metric, value, labels)
 }
 
 func (q *baseQueue) Topic() string { return q.topic }
@@ -72,7 +80,7 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 	}
 	if err != nil {
 		// 输出日志
-		fmt.Println("execute error", item)
+		logbus.Error("execute error", logbus.ErrorField(err), logbus.Object("item", item))
 	}
 }
 
@@ -96,11 +104,12 @@ func (q *baseQueue) close() error {
 
 func (q *baseQueue) isClosed() bool { return q.started.Get() == 0 }
 
-func (q *baseQueue) start(ts ...ticker) error {
+func (q *baseQueue) start(f func(item *Item) error, ts ...ticker) error {
 	if !q.started.CompareAndSwap(0, 1) {
 		return ErrTopicQueueHasStarted
 	}
 	q.wg.Add(len(ts))
+	q.handle = f
 	q.exitC = make(chan struct{})
 	var doTicker = func(ti ticker) {
 		t := time.NewTimer(0)
@@ -114,7 +123,7 @@ func (q *baseQueue) start(ts ...ticker) error {
 				_ = t.Reset(ti.d)
 				if err := ti.f(); err != nil {
 					// 输出日志
-					fmt.Println("ticker error", err)
+					logbus.Error("ticker error", logbus.ErrorField(err))
 				}
 			case <-q.exitC:
 				return
@@ -141,13 +150,13 @@ type memQueue struct {
 	query map[string]int
 }
 
-func NewMemoryTopicQueue(ctx context.Context, topic string, handler func(*Item) error, opts ...Option) TopicQueue {
-	return newMemoryTopicQueue(ctx, topic, handler, newConfig(opts...))
+func NewMemoryTopicQueue(ctx context.Context, topic string, opts ...Option) TopicQueue {
+	return newMemoryTopicQueue(ctx, topic, newConfig(opts...))
 }
 
-func newMemoryTopicQueue(ctx context.Context, topic string, handler func(*Item) error, opts *Options) TopicQueue {
+func newMemoryTopicQueue(ctx context.Context, topic string, opts *Options) TopicQueue {
 	q := &memQueue{query: make(map[string]int)}
-	q.baseQueue = baseQueue{ctx: ctx, opts: opts, topic: topic, handle: handler, failed: q.onFailed}
+	q.baseQueue = baseQueue{ctx: ctx, opts: opts, topic: topic, failed: q.onFailed}
 	return q
 }
 
@@ -199,8 +208,8 @@ func (q *memQueue) ticker() error {
 	return nil
 }
 
-func (q *memQueue) Start() error {
-	return q.start(ticker{d: 1 * time.Second, f: q.ticker})
+func (q *memQueue) Start(f func(item *Item) error) error {
+	return q.start(f, ticker{d: 1 * time.Second, f: q.ticker})
 }
 
 func (q *memQueue) Length() int64 {
@@ -225,11 +234,7 @@ func (q *memQueue) Push(item *Item) error {
 	cycle := int(calculateValue / wheelSize)
 	index := int(calculateValue % wheelSize)
 
-	if len(item.GetId()) == 0 {
-		item.Id = xid.New().String()
-	}
 	n := &wheelNode{
-		Id:         item.GetId(),
 		CycleCount: cycle,
 		WheelIndex: index,
 		Item:       item,

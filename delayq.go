@@ -20,8 +20,8 @@ type Queue interface {
 	Push(*Item) error
 	// Start 启动指定主题的延迟队列
 	Start(topic string, f func(*Item) error) error
-	// Register 注册并启动指定主题的延迟队列
-	Register(tq TopicQueue) error
+	// StartTopicQueue 启动指定主题的延迟队列
+	StartTopicQueue(tq TopicQueue, f func(*Item) error) error
 	// Stop 关闭指定主题的延迟队列
 	Stop(topic string) error
 	// Close 关闭所有延迟队列

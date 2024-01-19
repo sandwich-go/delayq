@@ -13,5 +13,9 @@ func OptionsOptionDeclareWithDefault() interface{} {
 		"RetryTimes": 10,
 		// annotation@OnDeadLetter(comment="当有死信")
 		"OnDeadLetter": func(item *Item) { fmt.Println("got dead letter, ", item) },
+		// annotation@MonitorEnable(comment="是否打开监控")
+		"MonitorEnable": true,
+		// annotation@MonitorNamespace(comment="监控的域名")
+		"MonitorNamespace": "delayq",
 	}
 }

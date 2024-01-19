@@ -3,6 +3,7 @@ package delayq
 import (
 	"context"
 	"fmt"
+	"github.com/sandwich-go/logbus"
 	"math"
 	"strconv"
 	"strings"
@@ -78,11 +79,11 @@ type redisQueue struct {
 	ackFailedScript  RedisScript
 }
 
-func NewRedisTopicQueue(ctx context.Context, topic string, handler func(*Item) error, opts ...Option) TopicQueue {
-	return newRedisTopicQueue(ctx, topic, handler, newConfig(opts...))
+func NewRedisTopicQueue(ctx context.Context, topic string, opts ...Option) TopicQueue {
+	return newRedisTopicQueue(ctx, topic, newConfig(opts...))
 }
 
-func newRedisTopicQueue(ctx context.Context, topic string, handler func(*Item) error, opts *Options) TopicQueue {
+func newRedisTopicQueue(ctx context.Context, topic string, opts *Options) TopicQueue {
 	builder := opts.GetRedisScriptBuilder()
 	q := &redisQueue{
 		delaySetKey:      fmt.Sprintf("do:{%s}", topic),
@@ -97,7 +98,7 @@ func newRedisTopicQueue(ctx context.Context, topic string, handler func(*Item) e
 		q.delaySetKey = fmt.Sprintf("%s:%s", prefix, q.delaySetKey)
 		q.doingSetKey = fmt.Sprintf("%s:%s", prefix, q.doingSetKey)
 	}
-	q.baseQueue = baseQueue{ctx: ctx, opts: opts, topic: topic, handle: handler, success: q.onSuccess, failed: q.onFailed}
+	q.baseQueue = baseQueue{ctx: ctx, opts: opts, topic: topic, success: q.onSuccess, failed: q.onFailed}
 	return q
 }
 
@@ -110,7 +111,7 @@ func (q *redisQueue) Push(item *Item) error {
 func (q *redisQueue) Length() int64 {
 	res, err := q.runScript(context.Background(), q.lengthScript, []string{q.delaySetKey, q.doingSetKey})
 	if err != nil {
-		fmt.Printf("length err: %v", err)
+		logbus.Error("length error", logbus.ErrorField(err))
 		return 0
 	}
 	return res[0].(int64)
@@ -118,8 +119,8 @@ func (q *redisQueue) Length() int64 {
 
 func (q *redisQueue) Close() error { return q.close() }
 
-func (q *redisQueue) Start() error {
-	return q.start(ticker{d: 1 * time.Second, f: q.poll}, ticker{d: 1 * time.Second, f: q.reclaim})
+func (q *redisQueue) Start(f func(item *Item) error) error {
+	return q.start(f, ticker{d: 1 * time.Second, f: q.poll}, ticker{d: 1 * time.Second, f: q.reclaim})
 }
 
 func (q *redisQueue) runScript(ctx context.Context, s RedisScript, keys []string, args ...interface{}) ([]interface{}, error) {
@@ -138,6 +139,7 @@ func (q *redisQueue) move(from, to string, offset float64) ([]interface{}, error
 func (q *redisQueue) poll() error {
 	res, err := q.move(q.delaySetKey, q.doingSetKey, safeSec)
 	if err != nil {
+		q.monitorCount("delayq_poll_error", 1, map[string]string{"Queue": q.topic})
 		return err
 	}
 	for i := 0; i < len(res); i += 2 {
@@ -161,7 +163,12 @@ func (q *redisQueue) poll() error {
 }
 
 func (q *redisQueue) reclaim() error {
-	_, err := q.move(q.doingSetKey, q.delaySetKey, 0)
+	items, err := q.move(q.doingSetKey, q.delaySetKey, 0)
+	if err != nil {
+		q.monitorCount("delayq_reclaim_error", 1, map[string]string{"Queue": q.topic})
+	} else {
+		q.monitorCount("delayq_reclaim", int64(len(items)/2), map[string]string{"Queue": q.topic})
+	}
 	return err
 }
 

@@ -10,16 +10,16 @@ import (
 
 func TestMemoryQueue_Close(t *testing.T) {
 	var ctx, cancel = context.WithCancel(context.Background())
-	tp := NewMemoryTopicQueue(ctx, "", nil)
+	tp := NewMemoryTopicQueue(ctx, "")
 
 	for _, v := range []struct {
 		do          func() error
 		shouldError bool
 	}{
 		{do: func() error { return tp.Close() }, shouldError: true},
-		{do: func() error { return tp.Start() }, shouldError: false}, {do: func() error { return tp.Close() }, shouldError: false},
+		{do: func() error { return tp.Start(nil) }, shouldError: false}, {do: func() error { return tp.Close() }, shouldError: false},
 		{do: func() error { return tp.Close() }, shouldError: true},
-		{do: func() error { return tp.Start() }, shouldError: false},
+		{do: func() error { return tp.Start(nil) }, shouldError: false},
 		{do: func() error {
 			var wg sync.WaitGroup
 			wg.Add(1)
@@ -54,13 +54,13 @@ func TestMemoryQueue(t *testing.T) {
 	var wg sync.WaitGroup
 	var now = time.Now()
 	var count = 0
-	tp := NewMemoryTopicQueue(context.Background(), "", func(item *Item) error {
-		t.Log(item.GetId(), time.Now().Sub(now))
+	tp := NewMemoryTopicQueue(context.Background(), "")
+	err := tp.Start(func(item *Item) error {
+		t.Log(time.Now().Sub(now))
 		wg.Done()
 		count++
 		return nil
 	})
-	err := tp.Start()
 	if err != nil {
 		t.Fatal("queue start error", err)
 	}
@@ -84,16 +84,16 @@ func TestMemoryQueueHandleFailed(t *testing.T) {
 	var wg sync.WaitGroup
 	var now = time.Now()
 	var count = 0
-	tp := NewMemoryTopicQueue(context.Background(), "", func(item *Item) error {
-		t.Log(item.GetId(), time.Now().Sub(now))
-		count++
-		wg.Done()
-		return fmt.Errorf("error")
-	}, WithRetryTimes(2), WithOnDeadLetter(func(item *Item) {
+	tp := NewMemoryTopicQueue(context.Background(), "", WithRetryTimes(2), WithOnDeadLetter(func(item *Item) {
 		t.Log("got dead letter, ", item)
 		wg.Done()
 	}))
-	err := tp.Start()
+	err := tp.Start(func(item *Item) error {
+		t.Log(time.Now().Sub(now))
+		count++
+		wg.Done()
+		return fmt.Errorf("error")
+	})
 	if err != nil {
 		t.Fatal("queue start error", err)
 	}
@@ -110,11 +110,11 @@ func TestMemoryQueueHandleFailed(t *testing.T) {
 
 func BenchmarkItem(b *testing.B) {
 	var wg sync.WaitGroup
-	tp := NewMemoryTopicQueue(context.Background(), "", func(item *Item) error {
+	tp := NewMemoryTopicQueue(context.Background(), "")
+	err := tp.Start(func(item *Item) error {
 		wg.Done()
 		return nil
 	})
-	err := tp.Start()
 	if err != nil {
 		b.Fatal("queue start error", err)
 	}
