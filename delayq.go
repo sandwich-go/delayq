@@ -20,6 +20,16 @@ type Status struct {
 	QueueLength map[string]int64 // topic -> 队列长度
 }
 
+// Item 延迟任务
+type Item struct {
+	// 主题
+	Topic string
+	// 延迟秒数
+	DelaySecond int64
+	// 值
+	Value []byte
+}
+
 type Queue interface {
 	// Status 获取队列当前状态
 	Status() Status
