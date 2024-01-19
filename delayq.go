@@ -1,12 +1,19 @@
 package delayq
 
-import "errors"
+import (
+	"errors"
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 var (
 	ErrTopicQueueHasClosed     = errors.New("topic queue has closed")
 	ErrTopicQueueHasStarted    = errors.New("topic queue has started")
 	ErrTopicQueueHasRegistered = errors.New("topic queue has registered")
 )
+
+type Monitor interface {
+	Count(metric string, value int64, labels prometheus.Labels) error
+}
 
 // Status 延迟队列状态
 type Status struct {
@@ -16,6 +23,8 @@ type Status struct {
 type Queue interface {
 	// Status 获取队列当前状态
 	Status() Status
+	// Collector 获取 prometheus 的 Collector
+	Collector() prometheus.Collector
 	// Push 放入延迟任务
 	Push(*Item) error
 	// Start 启动指定主题的延迟队列

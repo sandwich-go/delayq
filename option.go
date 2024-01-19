@@ -5,6 +5,8 @@ import "fmt"
 //go:generate optionGen  --new_func=newConfig --option_return_previous=false
 func OptionsOptionDeclareWithDefault() interface{} {
 	return map[string]interface{}{
+		// annotation@Name(comment="名称")
+		"Name": "delayq",
 		// annotation@Prefix(comment="前缀")
 		"Prefix": "__dq",
 		// annotation@RedisScriptBuilder(comment="redis 脚本工厂")
@@ -13,9 +15,7 @@ func OptionsOptionDeclareWithDefault() interface{} {
 		"RetryTimes": 10,
 		// annotation@OnDeadLetter(comment="当有死信")
 		"OnDeadLetter": func(item *Item) { fmt.Println("got dead letter, ", item) },
-		// annotation@MonitorEnable(comment="是否打开监控")
-		"MonitorEnable": true,
-		// annotation@MonitorNamespace(comment="监控的域名")
-		"MonitorNamespace": "delayq",
+		// annotation@Monitor(comment="监控")
+		"Monitor": Monitor(nil),
 	}
 }

@@ -3,7 +3,6 @@ package delayq
 import (
 	"context"
 	"fmt"
-	"github.com/sandwich-go/logbus"
 	"math"
 	"strconv"
 	"strings"
@@ -111,7 +110,7 @@ func (q *redisQueue) Push(item *Item) error {
 func (q *redisQueue) Length() int64 {
 	res, err := q.runScript(context.Background(), q.lengthScript, []string{q.delaySetKey, q.doingSetKey})
 	if err != nil {
-		logbus.Error("length error", logbus.ErrorField(err))
+		fmt.Println("length error", err)
 		return 0
 	}
 	return res[0].(int64)

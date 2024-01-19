@@ -1,22 +1,19 @@
 package delayq
 
 import (
+	"fmt"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sandwich-go/logbus"
-	monitor2 "github.com/sandwich-go/logbus/monitor"
 )
 
 const (
 	subsystem = "status"
 )
 
-type monitor interface {
-	Count(metric string, value int64, labels map[string]string)
-}
-
 type statsGetter interface {
 	Status() Status
 }
+
+type Collector = prometheus.Collector
 
 type statsCollector struct {
 	getter          statsGetter
@@ -24,30 +21,12 @@ type statsCollector struct {
 	opts            *Options
 }
 
-func registerMonitor(getter statsGetter, opts *Options) monitor {
-	collector := newCollector(getter, opts)
-	if opts.GetMonitorEnable() {
-		monitor2.RegisterCollector(collector)
-	}
-	return collector
-}
-
-func (c statsCollector) Count(metric string, value int64, labels map[string]string) {
-	if !c.opts.GetMonitorEnable() {
-		return
-	}
-	err := monitor2.Count(metric, value, labels)
-	if err != nil {
-		logbus.Error("monitor counter error", logbus.ErrorField(err))
-	}
-}
-
-func newCollector(getter statsGetter, opts *Options) *statsCollector {
+func newCollector(getter statsGetter, opts *Options) Collector {
 	return &statsCollector{
 		getter: getter,
 		opts:   opts,
 		queueLengthDesc: prometheus.NewDesc(
-			prometheus.BuildFQName(opts.GetMonitorNamespace(), subsystem, "queue_length"),
+			prometheus.BuildFQName(opts.GetName(), subsystem, "queue_length"),
 			"Length of topic queue.",
 			[]string{"queue"},
 			prometheus.Labels{},
@@ -69,4 +48,22 @@ func (c statsCollector) Collect(ch chan<- prometheus.Metric) {
 			k,
 		)
 	}
+}
+
+func monitorCount(m Monitor, metric string, value int64, labels prometheus.Labels) {
+	if m == nil {
+		return
+	}
+	err := m.Count(metric, value, labels)
+	if err != nil {
+		fmt.Println("monitor counter error", err)
+	}
+}
+
+func (q *baseQueue) monitorCount(metric string, value int64, labels prometheus.Labels) {
+	monitorCount(q.opts.GetMonitor(), metric, value, labels)
+}
+
+func (q *queue) monitorCount(metric string, value int64, labels prometheus.Labels) {
+	monitorCount(q.opts.GetMonitor(), metric, value, labels)
 }

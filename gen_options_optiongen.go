@@ -7,6 +7,8 @@ import "fmt"
 
 // Options should use newConfig to initialize it
 type Options struct {
+	// annotation@Name(comment="名称")
+	Name string
 	// annotation@Prefix(comment="前缀")
 	Prefix string
 	// annotation@RedisScriptBuilder(comment="redis 脚本工厂")
@@ -15,10 +17,8 @@ type Options struct {
 	RetryTimes int
 	// annotation@OnDeadLetter(comment="当有死信")
 	OnDeadLetter func(item *Item)
-	// annotation@MonitorEnable(comment="是否打开监控")
-	MonitorEnable bool
-	// annotation@MonitorNamespace(comment="监控的域名")
-	MonitorNamespace string
+	// annotation@Monitor(comment="监控")
+	Monitor Monitor
 }
 
 // newConfig new Options
@@ -42,6 +42,13 @@ func (cc *Options) ApplyOption(opts ...Option) {
 
 // Option option func
 type Option func(cc *Options)
+
+// WithName 名称
+func WithName(v string) Option {
+	return func(cc *Options) {
+		cc.Name = v
+	}
+}
 
 // WithPrefix 前缀
 func WithPrefix(v string) Option {
@@ -71,17 +78,10 @@ func WithOnDeadLetter(v func(item *Item)) Option {
 	}
 }
 
-// WithMonitorEnable 是否打开监控
-func WithMonitorEnable(v bool) Option {
+// WithMonitor 监控
+func WithMonitor(v Monitor) Option {
 	return func(cc *Options) {
-		cc.MonitorEnable = v
-	}
-}
-
-// WithMonitorNamespace 监控的域名
-func WithMonitorNamespace(v string) Option {
-	return func(cc *Options) {
-		cc.MonitorNamespace = v
+		cc.Monitor = v
 	}
 }
 
@@ -96,14 +96,14 @@ func newDefaultOptions() *Options {
 	cc := &Options{}
 
 	for _, opt := range [...]Option{
+		WithName("delayq"),
 		WithPrefix("__dq"),
 		WithRedisScriptBuilder(nil),
 		WithRetryTimes(10),
 		WithOnDeadLetter(func(item *Item) {
 			fmt.Println("got dead letter, ", item)
 		}),
-		WithMonitorEnable(true),
-		WithMonitorNamespace("delayq"),
+		WithMonitor(nil),
 	} {
 		opt(cc)
 	}
@@ -112,21 +112,21 @@ func newDefaultOptions() *Options {
 }
 
 // all getter func
+func (cc *Options) GetName() string                           { return cc.Name }
 func (cc *Options) GetPrefix() string                         { return cc.Prefix }
 func (cc *Options) GetRedisScriptBuilder() RedisScriptBuilder { return cc.RedisScriptBuilder }
 func (cc *Options) GetRetryTimes() int                        { return cc.RetryTimes }
 func (cc *Options) GetOnDeadLetter() func(item *Item)         { return cc.OnDeadLetter }
-func (cc *Options) GetMonitorEnable() bool                    { return cc.MonitorEnable }
-func (cc *Options) GetMonitorNamespace() string               { return cc.MonitorNamespace }
+func (cc *Options) GetMonitor() Monitor                       { return cc.Monitor }
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
+	GetName() string
 	GetPrefix() string
 	GetRedisScriptBuilder() RedisScriptBuilder
 	GetRetryTimes() int
 	GetOnDeadLetter() func(item *Item)
-	GetMonitorEnable() bool
-	GetMonitorNamespace() string
+	GetMonitor() Monitor
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options

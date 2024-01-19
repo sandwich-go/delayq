@@ -3,7 +3,6 @@ package delayq
 import (
 	"context"
 	"fmt"
-	"github.com/sandwich-go/logbus"
 	"math"
 	"sync"
 	"time"
@@ -41,7 +40,6 @@ type baseQueue struct {
 	ctx     context.Context
 	topic   string
 	opts    *Options
-	monitor monitor
 	handle  safeHandleItemFunc
 	failed  safeHandleItemFunc
 	success safeHandleItemFunc
@@ -49,13 +47,6 @@ type baseQueue struct {
 	wg      sync.WaitGroup
 	exitC   chan struct{}
 	started atomicInt32
-}
-
-func (q *baseQueue) monitorCount(metric string, value int64, labels map[string]string) {
-	if q.monitor == nil {
-		return
-	}
-	q.monitor.Count(metric, value, labels)
 }
 
 func (q *baseQueue) Topic() string { return q.topic }
@@ -80,7 +71,7 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 	}
 	if err != nil {
 		// 输出日志
-		logbus.Error("execute error", logbus.ErrorField(err), logbus.Object("item", item))
+		fmt.Println("execute error", err, item)
 	}
 }
 
@@ -123,7 +114,7 @@ func (q *baseQueue) start(f func(item *Item) error, ts ...ticker) error {
 				_ = t.Reset(ti.d)
 				if err := ti.f(); err != nil {
 					// 输出日志
-					logbus.Error("ticker error", logbus.ErrorField(err))
+					fmt.Println("ticker error", err)
 				}
 			case <-q.exitC:
 				return
