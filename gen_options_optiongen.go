@@ -17,8 +17,8 @@ type Options struct {
 	RetryTimes int
 	// annotation@OnDeadLetter(comment="当有死信")
 	OnDeadLetter func(item *Item)
-	// annotation@Monitor(comment="监控")
-	Monitor Monitor
+	// annotation@MonitorBuilder(comment="统计监控工厂")
+	MonitorBuilder MonitorBuilder
 }
 
 // newConfig new Options
@@ -78,10 +78,10 @@ func WithOnDeadLetter(v func(item *Item)) Option {
 	}
 }
 
-// WithMonitor 监控
-func WithMonitor(v Monitor) Option {
+// WithMonitorBuilder 统计监控工厂
+func WithMonitorBuilder(v MonitorBuilder) Option {
 	return func(cc *Options) {
-		cc.Monitor = v
+		cc.MonitorBuilder = v
 	}
 }
 
@@ -103,7 +103,7 @@ func newDefaultOptions() *Options {
 		WithOnDeadLetter(func(item *Item) {
 			fmt.Println("got dead letter, ", item)
 		}),
-		WithMonitor(nil),
+		WithMonitorBuilder(nil),
 	} {
 		opt(cc)
 	}
@@ -117,7 +117,7 @@ func (cc *Options) GetPrefix() string                         { return cc.Prefix
 func (cc *Options) GetRedisScriptBuilder() RedisScriptBuilder { return cc.RedisScriptBuilder }
 func (cc *Options) GetRetryTimes() int                        { return cc.RetryTimes }
 func (cc *Options) GetOnDeadLetter() func(item *Item)         { return cc.OnDeadLetter }
-func (cc *Options) GetMonitor() Monitor                       { return cc.Monitor }
+func (cc *Options) GetMonitorBuilder() MonitorBuilder         { return cc.MonitorBuilder }
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
@@ -126,7 +126,7 @@ type OptionsVisitor interface {
 	GetRedisScriptBuilder() RedisScriptBuilder
 	GetRetryTimes() int
 	GetOnDeadLetter() func(item *Item)
-	GetMonitor() Monitor
+	GetMonitorBuilder() MonitorBuilder
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options

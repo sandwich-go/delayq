@@ -15,7 +15,7 @@ func OptionsOptionDeclareWithDefault() interface{} {
 		"RetryTimes": 10,
 		// annotation@OnDeadLetter(comment="当有死信")
 		"OnDeadLetter": func(item *Item) { fmt.Println("got dead letter, ", item) },
-		// annotation@Monitor(comment="监控")
-		"Monitor": Monitor(nil),
+		// annotation@MonitorBuilder(comment="统计监控工厂")
+		"MonitorBuilder": MonitorBuilder(nil),
 	}
 }

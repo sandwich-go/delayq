@@ -18,6 +18,7 @@ type queue struct {
 	cancel      context.CancelFunc
 	opts        *Options
 	topicQueues sync.Map
+	monitors    *sync.Map
 	collector   Collector
 
 	mx sync.Mutex
@@ -25,7 +26,7 @@ type queue struct {
 
 func New(opts ...Option) Queue {
 	ctx, cancel := context.WithCancel(context.Background())
-	q := &queue{opts: newConfig(opts...), ctx: ctx, cancel: cancel}
+	q := &queue{opts: newConfig(opts...), ctx: ctx, cancel: cancel, monitors: new(sync.Map)}
 	q.collector = newCollector(q, q.opts)
 	return q
 }
@@ -53,9 +54,9 @@ func (q *queue) StartTopicQueue(tq TopicQueue, f func(*Item) error) error {
 	return tq.Start(func(item *Item) error {
 		err := f(item)
 		if err != nil {
-			q.monitorCount("delayq_handle_error", 1, map[string]string{"Queue": tq.Topic()})
+			q.monitorCounter("delayq_handle_error", tq.Topic())
 		} else {
-			q.monitorCount("delayq_handle", 1, map[string]string{"Queue": tq.Topic()})
+			q.monitorCounter("delayq_handle", tq.Topic())
 		}
 		return err
 	})
@@ -104,9 +105,9 @@ func (q *queue) Push(item *Item) error {
 		err = val.(TopicQueue).Push(item)
 	}
 	if err != nil {
-		q.monitorCount("delayq_produce_error", 1, map[string]string{"Queue": item.GetTopic()})
+		q.monitorCounter("delayq_produce_error", item.GetTopic())
 	} else {
-		q.monitorCount("delayq_produce", 1, map[string]string{"Queue": item.GetTopic()})
+		q.monitorCounter("delayq_produce", item.GetTopic())
 	}
 	return err
 }

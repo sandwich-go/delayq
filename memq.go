@@ -37,16 +37,26 @@ func (s safeHandleItemFunc) call(item *Item) error {
 }
 
 type baseQueue struct {
-	ctx     context.Context
-	topic   string
-	opts    *Options
-	handle  safeHandleItemFunc
-	failed  safeHandleItemFunc
-	success safeHandleItemFunc
+	ctx      context.Context
+	topic    string
+	opts     *Options
+	handle   safeHandleItemFunc
+	failed   safeHandleItemFunc
+	success  safeHandleItemFunc
+	monitors *sync.Map
 
 	wg      sync.WaitGroup
 	exitC   chan struct{}
 	started atomicInt32
+}
+
+func newBaseQueue(ctx context.Context, topic string, opts *Options) *baseQueue {
+	return &baseQueue{
+		ctx:      ctx,
+		opts:     opts,
+		topic:    topic,
+		monitors: new(sync.Map),
+	}
 }
 
 func (q *baseQueue) Topic() string { return q.topic }
@@ -133,7 +143,7 @@ func (q *baseQueue) start(f func(item *Item) error, ts ...ticker) error {
 }
 
 type memQueue struct {
-	baseQueue
+	*baseQueue
 	index  int
 	wheels [wheelSize]wheel
 
@@ -147,7 +157,8 @@ func NewMemoryTopicQueue(ctx context.Context, topic string, opts ...Option) Topi
 
 func newMemoryTopicQueue(ctx context.Context, topic string, opts *Options) TopicQueue {
 	q := &memQueue{query: make(map[string]int)}
-	q.baseQueue = baseQueue{ctx: ctx, opts: opts, topic: topic, failed: q.onFailed}
+	q.baseQueue = newBaseQueue(ctx, topic, opts)
+	q.baseQueue.failed = q.onFailed
 	return q
 }
 

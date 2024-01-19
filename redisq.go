@@ -66,7 +66,7 @@ type RedisScriptBuilder interface {
 }
 
 type redisQueue struct {
-	baseQueue
+	*baseQueue
 
 	delaySetKey string
 	doingSetKey string
@@ -97,7 +97,9 @@ func newRedisTopicQueue(ctx context.Context, topic string, opts *Options) TopicQ
 		q.delaySetKey = fmt.Sprintf("%s:%s", prefix, q.delaySetKey)
 		q.doingSetKey = fmt.Sprintf("%s:%s", prefix, q.doingSetKey)
 	}
-	q.baseQueue = baseQueue{ctx: ctx, opts: opts, topic: topic, success: q.onSuccess, failed: q.onFailed}
+	q.baseQueue = newBaseQueue(ctx, topic, opts)
+	q.baseQueue.success = q.onSuccess
+	q.baseQueue.failed = q.onFailed
 	return q
 }
 
@@ -138,7 +140,7 @@ func (q *redisQueue) move(from, to string, offset float64) ([]interface{}, error
 func (q *redisQueue) poll() error {
 	res, err := q.move(q.delaySetKey, q.doingSetKey, safeSec)
 	if err != nil {
-		q.monitorCount("delayq_poll_error", 1, map[string]string{"Queue": q.topic})
+		q.monitorCount("delayq_poll_error")
 		return err
 	}
 	for i := 0; i < len(res); i += 2 {
@@ -164,9 +166,9 @@ func (q *redisQueue) poll() error {
 func (q *redisQueue) reclaim() error {
 	items, err := q.move(q.doingSetKey, q.delaySetKey, 0)
 	if err != nil {
-		q.monitorCount("delayq_reclaim_error", 1, map[string]string{"Queue": q.topic})
+		q.monitorCount("delayq_reclaim_error")
 	} else {
-		q.monitorCount("delayq_reclaim", int64(len(items)/2), map[string]string{"Queue": q.topic})
+		q.monitorCount("delayq_reclaim", len(items)/2)
 	}
 	return err
 }

@@ -1,8 +1,8 @@
 package delayq
 
 import (
-	"fmt"
 	"github.com/prometheus/client_golang/prometheus"
+	"sync"
 )
 
 const (
@@ -50,20 +50,26 @@ func (c statsCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-func monitorCount(m Monitor, metric string, value int64, labels prometheus.Labels) {
-	if m == nil {
+func monitorCount(monitors *sync.Map, metric string, topic string, opts *Options, values ...int) {
+	builder := opts.GetMonitorBuilder()
+	if builder == nil {
 		return
 	}
-	err := m.Count(metric, value, labels)
-	if err != nil {
-		fmt.Println("monitor counter error", err)
+	counter, ok := monitors.Load(metric)
+	if !ok {
+		counter = builder.Build(metric, map[string]string{"Queue": topic})
+		monitors.Store(metric, counter)
+	}
+	if len(values) == 0 {
+		counter.(prometheus.Counter).Inc()
+	} else {
+		counter.(prometheus.Counter).Add(float64(values[0]))
 	}
 }
 
-func (q *baseQueue) monitorCount(metric string, value int64, labels prometheus.Labels) {
-	monitorCount(q.opts.GetMonitor(), metric, value, labels)
+func (q *baseQueue) monitorCount(metric string, values ...int) {
+	monitorCount(q.monitors, metric, q.topic, q.opts, values...)
 }
-
-func (q *queue) monitorCount(metric string, value int64, labels prometheus.Labels) {
-	monitorCount(q.opts.GetMonitor(), metric, value, labels)
+func (q *queue) monitorCounter(metric, topic string, values ...int) {
+	monitorCount(q.monitors, metric, topic, q.opts, values...)
 }
