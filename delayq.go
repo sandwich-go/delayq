@@ -11,10 +11,6 @@ var (
 	ErrTopicQueueHasRegistered = errors.New("topic queue has registered")
 )
 
-type MonitorBuilder interface {
-	Build(metric string, labels prometheus.Labels) prometheus.Counter
-}
-
 // Status 延迟队列状态
 type Status struct {
 	QueueLength map[string]int64 // topic -> 队列长度

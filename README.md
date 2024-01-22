@@ -94,7 +94,7 @@ type Options struct {
     RetryTimes int
     // annotation@OnDeadLetter(comment="当有死信")
     OnDeadLetter func(item *Item)
-    // annotation@MonitorBuilder(comment="统计监控工厂")
-    MonitorBuilder MonitorBuilder
+    // annotation@MonitorCounter(comment="监控统计函数")
+    MonitorCounter func(metric string, value int64, labels prometheus.Labels)
 }
 ```

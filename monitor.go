@@ -2,7 +2,6 @@ package delayq
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
-	"sync"
 )
 
 const (
@@ -50,26 +49,20 @@ func (c statsCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-func monitorCount(monitors *sync.Map, metric string, topic string, opts *Options, values ...int) {
-	builder := opts.GetMonitorBuilder()
-	if builder == nil {
+func monitorCount(metric string, topic string, opts *Options, values ...int) {
+	if opts.GetMonitorCounter() == nil {
 		return
 	}
-	counter, ok := monitors.Load(metric)
-	if !ok {
-		counter = builder.Build(metric, map[string]string{"Queue": topic})
-		monitors.Store(metric, counter)
+	var value int64 = 1
+	if len(values) > 0 {
+		value = int64(values[0])
 	}
-	if len(values) == 0 {
-		counter.(prometheus.Counter).Inc()
-	} else {
-		counter.(prometheus.Counter).Add(float64(values[0]))
-	}
+	opts.GetMonitorCounter()(metric, value, map[string]string{"Queue": topic})
 }
 
 func (q *baseQueue) monitorCount(metric string, values ...int) {
-	monitorCount(q.monitors, metric, q.topic, q.opts, values...)
+	monitorCount(metric, q.topic, q.opts, values...)
 }
 func (q *queue) monitorCounter(metric, topic string, values ...int) {
-	monitorCount(q.monitors, metric, topic, q.opts, values...)
+	monitorCount(metric, topic, q.opts, values...)
 }

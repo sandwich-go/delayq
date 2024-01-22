@@ -37,13 +37,12 @@ func (s safeHandleItemFunc) call(item *Item) error {
 }
 
 type baseQueue struct {
-	ctx      context.Context
-	topic    string
-	opts     *Options
-	handle   safeHandleItemFunc
-	failed   safeHandleItemFunc
-	success  safeHandleItemFunc
-	monitors *sync.Map
+	ctx     context.Context
+	topic   string
+	opts    *Options
+	handle  safeHandleItemFunc
+	failed  safeHandleItemFunc
+	success safeHandleItemFunc
 
 	wg      sync.WaitGroup
 	exitC   chan struct{}
@@ -52,10 +51,9 @@ type baseQueue struct {
 
 func newBaseQueue(ctx context.Context, topic string, opts *Options) *baseQueue {
 	return &baseQueue{
-		ctx:      ctx,
-		opts:     opts,
-		topic:    topic,
-		monitors: new(sync.Map),
+		ctx:   ctx,
+		opts:  opts,
+		topic: topic,
 	}
 }
 

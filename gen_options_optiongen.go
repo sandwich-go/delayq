@@ -3,7 +3,11 @@
 
 package delayq
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 // Options should use newConfig to initialize it
 type Options struct {
@@ -17,8 +21,8 @@ type Options struct {
 	RetryTimes int
 	// annotation@OnDeadLetter(comment="当有死信")
 	OnDeadLetter func(item *Item)
-	// annotation@MonitorBuilder(comment="统计监控工厂")
-	MonitorBuilder MonitorBuilder
+	// annotation@MonitorCounter(comment="监控统计函数")
+	MonitorCounter func(metric string, value int64, labels prometheus.Labels)
 }
 
 // newConfig new Options
@@ -78,10 +82,10 @@ func WithOnDeadLetter(v func(item *Item)) Option {
 	}
 }
 
-// WithMonitorBuilder 统计监控工厂
-func WithMonitorBuilder(v MonitorBuilder) Option {
+// WithMonitorCounter 监控统计函数
+func WithMonitorCounter(v func(metric string, value int64, labels prometheus.Labels)) Option {
 	return func(cc *Options) {
-		cc.MonitorBuilder = v
+		cc.MonitorCounter = v
 	}
 }
 
@@ -103,7 +107,8 @@ func newDefaultOptions() *Options {
 		WithOnDeadLetter(func(item *Item) {
 			fmt.Println("got dead letter, ", item)
 		}),
-		WithMonitorBuilder(nil),
+		WithMonitorCounter(func(metric string, value int64, labels prometheus.Labels) {
+		}),
 	} {
 		opt(cc)
 	}
@@ -117,7 +122,9 @@ func (cc *Options) GetPrefix() string                         { return cc.Prefix
 func (cc *Options) GetRedisScriptBuilder() RedisScriptBuilder { return cc.RedisScriptBuilder }
 func (cc *Options) GetRetryTimes() int                        { return cc.RetryTimes }
 func (cc *Options) GetOnDeadLetter() func(item *Item)         { return cc.OnDeadLetter }
-func (cc *Options) GetMonitorBuilder() MonitorBuilder         { return cc.MonitorBuilder }
+func (cc *Options) GetMonitorCounter() func(metric string, value int64, labels prometheus.Labels) {
+	return cc.MonitorCounter
+}
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
@@ -126,7 +133,7 @@ type OptionsVisitor interface {
 	GetRedisScriptBuilder() RedisScriptBuilder
 	GetRetryTimes() int
 	GetOnDeadLetter() func(item *Item)
-	GetMonitorBuilder() MonitorBuilder
+	GetMonitorCounter() func(metric string, value int64, labels prometheus.Labels)
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options
