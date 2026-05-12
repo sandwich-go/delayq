@@ -3,8 +3,9 @@ package delayq
 import (
 	"context"
 	"fmt"
-	"math"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,21 +41,37 @@ type baseQueue struct {
 	ctx     context.Context
 	topic   string
 	opts    *Options
+	log     Logger
 	handle  safeHandleItemFunc
 	failed  safeHandleItemFunc
 	success safeHandleItemFunc
 
-	wg      sync.WaitGroup
-	exitC   chan struct{}
-	started atomicInt32
+	// wg 用于 ticker goroutine 的等待
+	wg sync.WaitGroup
+	// execWG 用于业务处理 goroutine 的等待，Close 时保证所有 handler 返回
+	execWG sync.WaitGroup
+	// sem worker pool 信号量，nil 表示不限制
+	sem chan struct{}
+
+	exitC     chan struct{}
+	closeOnce sync.Once
+	started   atomicInt32
 }
 
 func newBaseQueue(ctx context.Context, topic string, opts *Options) *baseQueue {
-	return &baseQueue{
+	q := &baseQueue{
 		ctx:   ctx,
 		opts:  opts,
 		topic: topic,
+		log:   opts.GetLogger(),
 	}
+	if q.log == nil {
+		q.log = newDefaultLogger()
+	}
+	if n := opts.GetMaxConcurrency(); n > 0 {
+		q.sem = make(chan struct{}, n)
+	}
+	return q
 }
 
 func (q *baseQueue) Topic() string { return q.topic }
@@ -63,7 +80,7 @@ func (q *baseQueue) executeOne(item *Item) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("handle panic: %v", r)
-			return
+			q.log.Errorf("topic=%s handle panic: %v", q.topic, r)
 		}
 	}()
 	err = q.handle.call(item)
@@ -73,22 +90,47 @@ func (q *baseQueue) executeOne(item *Item) (err error) {
 func (q *baseQueue) executeOneWithRetry(item *Item) {
 	err := q.executeOne(item)
 	if err != nil {
-		err = q.failed.call(item)
+		if ferr := q.failed.call(item); ferr != nil {
+			q.log.Errorf("topic=%s failed callback error: %v item=%v", q.topic, ferr, item)
+		}
 	} else {
-		err = q.success.call(item)
-	}
-	if err != nil {
-		// 输出日志
-		fmt.Println("execute error", err, item)
+		if serr := q.success.call(item); serr != nil {
+			q.log.Errorf("topic=%s success callback error: %v item=%v", q.topic, serr, item)
+		}
 	}
 }
 
+// execute 异步处理 items；受 MaxConcurrency 信号量约束，并通过 execWG 与 Close 同步
 func (q *baseQueue) execute(items ...*Item) {
 	if len(items) == 0 {
 		return
 	}
 	for _, item := range items {
-		go func(j *Item) { q.executeOneWithRetry(j) }(item)
+		// 已关闭则不再派发
+		if q.isClosed() {
+			return
+		}
+		j := item
+		q.execWG.Add(1)
+		if q.sem != nil {
+			// 阻塞式获取，若 Close 触发则退出
+			select {
+			case q.sem <- struct{}{}:
+			case <-q.exitC:
+				q.execWG.Done()
+				return
+			case <-q.ctx.Done():
+				q.execWG.Done()
+				return
+			}
+		}
+		go func() {
+			defer q.execWG.Done()
+			if q.sem != nil {
+				defer func() { <-q.sem }()
+			}
+			q.executeOneWithRetry(j)
+		}()
 	}
 }
 
@@ -96,8 +138,10 @@ func (q *baseQueue) close() error {
 	if !q.started.CompareAndSwap(1, 0) {
 		return ErrTopicQueueHasClosed
 	}
-	close(q.exitC)
+	q.closeOnce.Do(func() { close(q.exitC) })
 	q.wg.Wait()
+	// 等待所有在途业务 goroutine 返回，避免 handler 执行中队列已释放
+	q.execWG.Wait()
 	return nil
 }
 
@@ -110,6 +154,7 @@ func (q *baseQueue) start(f func(item *Item) error, ts ...ticker) error {
 	q.wg.Add(len(ts))
 	q.handle = f
 	q.exitC = make(chan struct{})
+	q.closeOnce = sync.Once{}
 	var doTicker = func(ti ticker) {
 		t := time.NewTimer(0)
 		defer func() {
@@ -121,13 +166,15 @@ func (q *baseQueue) start(f func(item *Item) error, ts ...ticker) error {
 			case <-t.C:
 				_ = t.Reset(ti.d)
 				if err := ti.f(); err != nil {
-					// 输出日志
-					fmt.Println("ticker error", err)
+					q.log.Errorf("topic=%s ticker error: %v", q.topic, err)
 				}
 			case <-q.exitC:
 				return
 			case <-q.ctx.Done():
-				q.started.Set(0)
+				// 仅触发状态变更与 exitC 关闭，让其他 ticker 也感知退出
+				if q.started.CompareAndSwap(1, 0) {
+					q.closeOnce.Do(func() { close(q.exitC) })
+				}
 				return
 			}
 		}
@@ -142,11 +189,15 @@ func (q *baseQueue) start(f func(item *Item) error, ts ...ticker) error {
 
 type memQueue struct {
 	*baseQueue
-	index  int
-	wheels [wheelSize]wheel
+	index int
 
-	mx    sync.Mutex
-	query map[string]int
+	// mx 保护 wheels、query、index
+	mx     sync.Mutex
+	wheels [wheelSize]wheel
+	query  map[string]struct{}
+
+	// idSeq 为节点分配唯一 id
+	idSeq uint64
 }
 
 func NewMemoryTopicQueue(ctx context.Context, topic string, opts ...Option) TopicQueue {
@@ -154,56 +205,93 @@ func NewMemoryTopicQueue(ctx context.Context, topic string, opts ...Option) Topi
 }
 
 func newMemoryTopicQueue(ctx context.Context, topic string, opts *Options) TopicQueue {
-	q := &memQueue{query: make(map[string]int)}
+	q := &memQueue{query: make(map[string]struct{})}
 	q.baseQueue = newBaseQueue(ctx, topic, opts)
 	q.baseQueue.failed = q.onFailed
 	return q
 }
 
+// onFailed 内存队列的失败回调
+// 语义：Item.DelaySecond 为负时，其绝对值作为已失败次数。
+// 达到 RetryTimes 投递死信，否则以 1 秒延迟重入队列并累计失败次数。
 func (q *memQueue) onFailed(item *Item) error {
-	if item.GetDelaySecond() > 0 {
-		item.DelaySecond = 0
+	failedCount := 0
+	if item.GetDelaySecond() < 0 {
+		failedCount = int(-item.GetDelaySecond())
 	}
-	item.DelaySecond--
-	if int(math.Abs(float64(item.DelaySecond))) > q.opts.GetRetryTimes() {
+	failedCount++
+	if failedCount > q.opts.GetRetryTimes() {
 		if f := q.opts.GetOnDeadLetter(); f != nil {
 			f(item)
+		} else {
+			q.log.Warnf("topic=%s dead letter: %v", q.topic, item)
 		}
 		return nil
 	}
-	return q.Push(item)
+	retry := &Item{
+		Topic:       item.GetTopic(),
+		DelaySecond: int64(-failedCount), // 负值编码失败次数
+		Value:       item.GetValue(),
+	}
+	return q.pushRetry(retry, 1)
 }
 
-func (q *memQueue) ticker() error {
-	if q.index >= wheelSize {
-		q.index = q.index % wheelSize
+// pushRetry 按给定 delaySecond 重新入队，不修改 item.DelaySecond 中编码的失败计数
+func (q *memQueue) pushRetry(item *Item, delaySecond int64) error {
+	if q.isClosed() {
+		return ErrTopicQueueHasClosed
 	}
-	head := q.wheels[q.index].Nodes
-	headIndex := q.index
-	q.index++
+	if delaySecond < 0 {
+		delaySecond = 0
+	}
+	q.mx.Lock()
+	defer q.mx.Unlock()
 
-	prev := head
-	p := head
-	for p != nil {
+	calculateValue := int64(q.index) + delaySecond
+	cycle := int(calculateValue / wheelSize)
+	idx := int(calculateValue % wheelSize)
+
+	id := strconv.FormatUint(atomic.AddUint64(&q.idSeq, 1), 10)
+	n := &wheelNode{
+		Id:         id,
+		CycleCount: cycle,
+		WheelIndex: idx,
+		Item:       item,
+		Next:       q.wheels[idx].Nodes,
+	}
+	q.wheels[idx].Nodes = n
+	q.query[id] = struct{}{}
+	return nil
+}
+
+// ticker 时间轮推进：检出当前槽位所有到期节点，批量派发给 execute
+func (q *memQueue) ticker() error {
+	q.mx.Lock()
+	headIndex := q.index % wheelSize
+	q.index = headIndex + 1
+
+	// 使用 dummy head 简化链表删除
+	dummy := &wheelNode{Next: q.wheels[headIndex].Nodes}
+	prev := dummy
+	var due []*Item
+	for p := dummy.Next; p != nil; {
 		if p.CycleCount == 0 {
-			taskId := p.Id
-			q.execute(p.Item)
-			if prev == p {
-				q.wheels[headIndex].Nodes = p.Next
-				prev = p.Next
-				p = p.Next
-			} else {
-				prev.Next = p.Next
-				p = p.Next
-			}
-			q.mx.Lock()
-			delete(q.query, taskId)
-			q.mx.Unlock()
+			// 取出并从链表中摘除
+			due = append(due, p.Item)
+			delete(q.query, p.Id)
+			prev.Next = p.Next
+			p = p.Next
 		} else {
 			p.CycleCount--
 			prev = p
 			p = p.Next
 		}
+	}
+	q.wheels[headIndex].Nodes = dummy.Next
+	q.mx.Unlock()
+
+	if len(due) > 0 {
+		q.execute(due...)
 	}
 	return nil
 }
@@ -228,30 +316,23 @@ func (q *memQueue) Push(item *Item) error {
 	if delaySecond < 0 {
 		delaySecond = 0
 	}
-	seconds := delaySecond
-	calculateValue := int64(q.index) + seconds
 
-	cycle := int(calculateValue / wheelSize)
-	index := int(calculateValue % wheelSize)
-
-	n := &wheelNode{
-		CycleCount: cycle,
-		WheelIndex: index,
-		Item:       item,
-	}
-	if cycle > 0 && index <= q.index {
-		cycle--
-		n.CycleCount = cycle
-	}
 	q.mx.Lock()
-	if q.wheels[index].Nodes == nil {
-		q.wheels[index].Nodes = n
-	} else {
-		head := q.wheels[index].Nodes
-		n.Next = head
-		q.wheels[index].Nodes = n
+	defer q.mx.Unlock()
+
+	calculateValue := int64(q.index) + delaySecond
+	cycle := int(calculateValue / wheelSize)
+	idx := int(calculateValue % wheelSize)
+
+	id := strconv.FormatUint(atomic.AddUint64(&q.idSeq, 1), 10)
+	n := &wheelNode{
+		Id:         id,
+		CycleCount: cycle,
+		WheelIndex: idx,
+		Item:       item,
+		Next:       q.wheels[idx].Nodes,
 	}
-	q.query[n.Id] = n.WheelIndex
-	q.mx.Unlock()
+	q.wheels[idx].Nodes = n
+	q.query[id] = struct{}{}
 	return nil
 }

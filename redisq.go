@@ -103,19 +103,31 @@ func newRedisTopicQueue(ctx context.Context, topic string, opts *Options) TopicQ
 	return q
 }
 
+// opCtx 返回基于 q.ctx 的操作上下文，保证 Close/ctx 取消时 Redis 调用可被及时中断
+func (q *redisQueue) opCtx() context.Context {
+	if q.ctx != nil {
+		return q.ctx
+	}
+	return context.Background()
+}
+
 func (q *redisQueue) Push(item *Item) error {
 	now := unix()
-	_, err := q.runScript(context.Background(), q.addScript, []string{q.delaySetKey}, item.GetValue(), now)
+	_, err := q.runScript(q.opCtx(), q.addScript, []string{q.delaySetKey}, item.GetValue(), now)
 	return err
 }
 
 func (q *redisQueue) Length() int64 {
-	res, err := q.runScript(context.Background(), q.lengthScript, []string{q.delaySetKey, q.doingSetKey})
+	res, err := q.runScript(q.opCtx(), q.lengthScript, []string{q.delaySetKey, q.doingSetKey})
 	if err != nil {
-		fmt.Println("length error", err)
+		q.log.Errorf("topic=%s length error: %v", q.topic, err)
 		return 0
 	}
-	return res[0].(int64)
+	if len(res) == 0 {
+		return 0
+	}
+	v, _ := res[0].(int64)
+	return v
 }
 
 func (q *redisQueue) Close() error { return q.close() }
@@ -134,7 +146,7 @@ func (q *redisQueue) runScript(ctx context.Context, s RedisScript, keys []string
 
 func (q *redisQueue) move(from, to string, offset float64) ([]interface{}, error) {
 	now := unix()
-	return q.runScript(context.Background(), q.moveScript, []string{from, to}, now, float64(now)+offset)
+	return q.runScript(q.opCtx(), q.moveScript, []string{from, to}, now, float64(now)+offset)
 }
 
 func (q *redisQueue) poll() error {
@@ -143,9 +155,14 @@ func (q *redisQueue) poll() error {
 		q.monitorCount("delayq_poll_error")
 		return err
 	}
-	for i := 0; i < len(res); i += 2 {
-		item := &Item{Value: []byte(res[i].(string))}
-		score, _ := strconv.ParseInt(res[i+1].(string), 10, 64)
+	for i := 0; i+1 < len(res); i += 2 {
+		val, ok := res[i].(string)
+		if !ok {
+			continue
+		}
+		item := &Item{Value: []byte(val)}
+		scoreStr, _ := res[i+1].(string)
+		score, _ := strconv.ParseInt(scoreStr, 10, 64)
 		if score < 0 {
 			// 曾经失败过
 			item.DelaySecond = score
@@ -153,8 +170,12 @@ func (q *redisQueue) poll() error {
 			if int(math.Abs(float64(score))) >= q.opts.GetRetryTimes() {
 				if f := q.opts.GetOnDeadLetter(); f != nil {
 					f(item)
+				} else {
+					q.log.Warnf("topic=%s dead letter: %v", q.topic, item)
 				}
-				_ = q.onSuccess(item)
+				if aerr := q.onSuccess(item); aerr != nil {
+					q.log.Errorf("topic=%s ack dead letter error: %v", q.topic, aerr)
+				}
 				continue
 			}
 		}
@@ -174,11 +195,11 @@ func (q *redisQueue) reclaim() error {
 }
 
 func (q *redisQueue) onFailed(item *Item) error {
-	_, err := q.runScript(context.Background(), q.ackFailedScript, []string{q.delaySetKey, q.doingSetKey}, item.GetValue(), item.GetDelaySecond())
+	_, err := q.runScript(q.opCtx(), q.ackFailedScript, []string{q.delaySetKey, q.doingSetKey}, item.GetValue(), item.GetDelaySecond())
 	return err
 }
 
 func (q *redisQueue) onSuccess(item *Item) error {
-	_, err := q.runScript(context.Background(), q.ackSuccessScript, []string{q.delaySetKey, q.doingSetKey}, item.GetValue(), 0)
+	_, err := q.runScript(q.opCtx(), q.ackSuccessScript, []string{q.delaySetKey, q.doingSetKey}, item.GetValue(), 0)
 	return err
 }

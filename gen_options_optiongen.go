@@ -4,8 +4,6 @@
 package delayq
 
 import (
-	"fmt"
-
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -23,6 +21,10 @@ type Options struct {
 	OnDeadLetter func(item *Item)
 	// annotation@MonitorCounter(comment="监控统计函数")
 	MonitorCounter func(metric string, value int64, labels prometheus.Labels)
+	// annotation@Logger(comment="日志实现，默认输出到 stderr")
+	Logger Logger
+	// annotation@MaxConcurrency(comment="单 topic 业务处理最大并发 goroutine 数，<=0 表示不限制")
+	MaxConcurrency int
 }
 
 // newConfig new Options
@@ -89,6 +91,20 @@ func WithMonitorCounter(v func(metric string, value int64, labels prometheus.Lab
 	}
 }
 
+// WithLogger 日志实现，默认输出到 stderr
+func WithLogger(v Logger) Option {
+	return func(cc *Options) {
+		cc.Logger = v
+	}
+}
+
+// WithMaxConcurrency 单 topic 业务处理最大并发 goroutine 数，<=0 表示不限制
+func WithMaxConcurrency(v int) Option {
+	return func(cc *Options) {
+		cc.MaxConcurrency = v
+	}
+}
+
 // InstallOptionsWatchDog the installed func will called when newConfig  called
 func InstallOptionsWatchDog(dog func(cc *Options)) { watchDogOptions = dog }
 
@@ -104,11 +120,11 @@ func newDefaultOptions() *Options {
 		WithPrefix("__dq"),
 		WithRedisScriptBuilder(nil),
 		WithRetryTimes(10),
-		WithOnDeadLetter(func(item *Item) {
-			fmt.Println("got dead letter, ", item)
-		}),
+		WithOnDeadLetter(nil),
 		WithMonitorCounter(func(metric string, value int64, labels prometheus.Labels) {
 		}),
+		WithLogger(nil),
+		WithMaxConcurrency(256),
 	} {
 		opt(cc)
 	}
@@ -125,6 +141,8 @@ func (cc *Options) GetOnDeadLetter() func(item *Item)         { return cc.OnDead
 func (cc *Options) GetMonitorCounter() func(metric string, value int64, labels prometheus.Labels) {
 	return cc.MonitorCounter
 }
+func (cc *Options) GetLogger() Logger      { return cc.Logger }
+func (cc *Options) GetMaxConcurrency() int { return cc.MaxConcurrency }
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
@@ -134,6 +152,8 @@ type OptionsVisitor interface {
 	GetRetryTimes() int
 	GetOnDeadLetter() func(item *Item)
 	GetMonitorCounter() func(metric string, value int64, labels prometheus.Labels)
+	GetLogger() Logger
+	GetMaxConcurrency() int
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options
