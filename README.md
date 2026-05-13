@@ -300,6 +300,37 @@ dq := delayq.New(delayq.WithLogger(delayq.NopLogger())) // 关闭日志
 
 默认输出到 stderr，前缀 `[delayq]`。
 
+## 预设（Preset）
+
+针对常见场景提供一组开箱即用的 Option 组合：
+
+```go
+// 高吞吐：>=10k QPS Push（订单、通知、日志缓冲）
+dq := delayq.New(delayq.HighThroughputPreset()...)
+
+// 低延迟：实时派发（IM、推送）
+dq := delayq.New(delayq.LowLatencyPreset()...)
+
+// 高可靠：消息不能丢（金融、对账）
+dq := delayq.New(append(delayq.ReliablePreset(),
+    delayq.WithOnDeadLetter(persistDeadLetter), // 必须设置死信回调
+)...)
+
+// 与额外 Option 组合（后者覆盖前者）
+dq := delayq.New(append(delayq.HighThroughputPreset(),
+    delayq.WithName("myapp"),
+    delayq.WithMaxConcurrency(2048), // 覆盖 preset 中的默认值
+)...)
+```
+
+各预设详情：
+
+| Preset | DisableValueIndex | MaxConcurrency | RetryTimes | VisibilityTimeout | 说明 |
+|--------|-------------------|----------------|------------|-------------------|------|
+| `HighThroughputPreset` | ✅ | 1024 | 3 | 5min | Get/Cancel 不可用，Push 提速 ~40% |
+| `LowLatencyPreset` | ✗ | 256 | 2 | 30s | 短重试间隔，崩溃快速恢复 |
+| `ReliablePreset` | ✗ | 64 | 15 | 15min | 长重试 + 大容错窗口 |
+
 ## 限流
 
 ```go

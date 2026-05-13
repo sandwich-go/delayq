@@ -16,6 +16,19 @@ test: ## 运行测试
 test-race: ## 运行测试（含 race detector）
 	$(GO) test $(GOFLAGS) -race -count=1 -timeout 240s ./...
 
+test-integration: ## 运行 Redis 集成测试（需要 REDIS_ADDR 或本地 docker）
+	@if [ -z "$(REDIS_ADDR)" ]; then \
+		echo "starting docker redis..."; \
+		docker run -d --rm -p 6379:6379 --name delayq-redis-test redis:7-alpine >/dev/null; \
+		sleep 2; \
+		REDIS_ADDR=127.0.0.1:6379 $(GO) test -tags=integration -race -count=1 -timeout 5m -run TestIntegration ./...; \
+		ec=$$?; \
+		docker stop delayq-redis-test >/dev/null; \
+		exit $$ec; \
+	else \
+		$(GO) test -tags=integration -race -count=1 -timeout 5m -run TestIntegration ./...; \
+	fi
+
 cover: ## 生成覆盖率报告
 	$(GO) test $(GOFLAGS) -race -count=1 -coverprofile=coverage.out -timeout 240s ./...
 	$(GO) tool cover -func=coverage.out | tail -1
