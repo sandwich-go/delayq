@@ -96,18 +96,52 @@ func (q *queue) Close() error {
 	return err
 }
 
+// Push 把 item 投递到对应 topic 的队列。
+// 路由规则：
+//  1. Item.Topic 非空 → 路由到该 topic
+//  2. Item.Topic 为空 且 仅注册一个 topic → 自动路由到唯一 topic（并回填 Item.Topic）
+//  3. Item.Topic 为空 且 注册了 0 或多个 topic → 返回 ErrTopicQueueHasClosed
 func (q *queue) Push(item *Item) error {
+	topic := item.GetTopic()
+	if topic == "" {
+		topic = q.resolveSingleTopic()
+		if topic == "" {
+			q.monitorCounter("delayq_produce_error", "")
+			return ErrTopicQueueHasClosed
+		}
+		// 回填 Topic，方便后续 handler 访问
+		item.Topic = topic
+	}
 	var err error
-	val, ok := q.topicQueues.Load(item.GetTopic())
+	val, ok := q.topicQueues.Load(topic)
 	if !ok {
 		err = ErrTopicQueueHasClosed
 	} else {
 		err = val.(TopicQueue).Push(item)
 	}
 	if err != nil {
-		q.monitorCounter("delayq_produce_error", item.GetTopic())
+		q.monitorCounter("delayq_produce_error", topic)
 	} else {
-		q.monitorCounter("delayq_produce", item.GetTopic())
+		q.monitorCounter("delayq_produce", topic)
 	}
 	return err
+}
+
+// resolveSingleTopic 在仅注册一个 topic 时返回该 topic 名，否则返回空串
+func (q *queue) resolveSingleTopic() string {
+	var only string
+	count := 0
+	q.topicQueues.Range(func(key, _ any) bool {
+		count++
+		if count > 1 {
+			only = ""
+			return false
+		}
+		only = key.(string)
+		return true
+	})
+	if count == 1 {
+		return only
+	}
+	return ""
 }

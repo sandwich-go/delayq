@@ -138,6 +138,9 @@ func (q *redisQueue) opCtx() context.Context {
 
 // Push 将 item 加入延迟队列，DelaySecond 为相对秒数
 func (q *redisQueue) Push(item *Item) error {
+	if err := q.prepareItem(item); err != nil {
+		return err
+	}
 	score := unix() + item.GetDelaySecond()
 	if item.GetDelaySecond() < 0 {
 		score = unix()
@@ -233,11 +236,7 @@ func (q *redisQueue) poll() error {
 		}
 		// 已达重试上限，直接死信
 		if int(failed) >= q.opts.GetRetryTimes() && q.opts.GetRetryTimes() > 0 {
-			if f := q.opts.GetOnDeadLetter(); f != nil {
-				f(p.item)
-			} else {
-				q.log.Warnf("topic=%s dead letter: %v", q.topic, p.item)
-			}
+			q.invokeDeadLetter(p.item)
 			if aerr := q.onSuccess(p.item); aerr != nil {
 				q.log.Errorf("topic=%s ack dead letter error: %v", q.topic, aerr)
 			}

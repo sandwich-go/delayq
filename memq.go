@@ -76,6 +76,47 @@ func newBaseQueue(ctx context.Context, topic string, opts *Options) *baseQueue {
 
 func (q *baseQueue) Topic() string { return q.topic }
 
+// largeValueWarnThreshold Push 时 Value 超过该字节数会记录 WARN 日志（不阻断）
+const largeValueWarnThreshold = 4 * 1024
+
+// invokeDeadLetter 安全调用用户的 OnDeadLetter 回调，捕获 panic
+func (q *baseQueue) invokeDeadLetter(item *Item) {
+	f := q.opts.GetOnDeadLetter()
+	if f == nil {
+		q.log.Warnf("topic=%s dead letter: %v", q.topic, item)
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			q.log.Errorf("topic=%s OnDeadLetter callback panic: %v item=%v", q.topic, r, item)
+		}
+	}()
+	f(item)
+}
+
+// prepareItem 在 Push 前对 item 进行规范化与告警：
+//   - 注入 topic（如果用户没填）
+//   - 校验 value 大小并记录 WARN 日志
+//
+// 返回 nil 表示通过；返回 error 表示拒绝入队。
+func (q *baseQueue) prepareItem(item *Item) error {
+	if item == nil {
+		return ErrNilItem
+	}
+	// 如果用户没填 Topic 或填错（非该 queue 的 topic），用 queue.topic 覆盖
+	if item.GetTopic() != q.topic {
+		if item.GetTopic() != "" {
+			q.log.Debugf("topic=%s push item with mismatched topic %q, override", q.topic, item.GetTopic())
+		}
+		item.Topic = q.topic
+	}
+	if size := len(item.GetValue()); size >= largeValueWarnThreshold {
+		q.log.Warnf("topic=%s pushing large item value: size=%d bytes (recommended <= 1KB; consider storing payload externally and pushing only an ID)",
+			q.topic, size)
+	}
+	return nil
+}
+
 func (q *baseQueue) executeOne(item *Item) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -88,6 +129,11 @@ func (q *baseQueue) executeOne(item *Item) (err error) {
 }
 
 func (q *baseQueue) executeOneWithRetry(item *Item) {
+	defer func() {
+		if r := recover(); r != nil {
+			q.log.Errorf("topic=%s ack callback panic: %v item=%v", q.topic, r, item)
+		}
+	}()
 	err := q.executeOne(item)
 	if err != nil {
 		if ferr := q.failed.call(item); ferr != nil {
@@ -101,32 +147,35 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 }
 
 // execute 异步处理 items；受 MaxConcurrency 信号量约束，并通过 execWG 与 Close 同步
+//
+// 调度顺序：
+//  1. 检查队列是否关闭，若关闭直接返回（剩余 items 丢弃）
+//  2. 阻塞式获取信号量；若期间感知到关闭（exitC / ctx.Done）则退出
+//  3. 信号量获取成功后再 execWG.Add(1)，保证 wg 严格成对
+//  4. 子 goroutine 内 defer 释放信号量并 Done
 func (q *baseQueue) execute(items ...*Item) {
 	if len(items) == 0 {
 		return
 	}
+	useSem := q.sem != nil
 	for _, item := range items {
-		// 已关闭则不再派发
 		if q.isClosed() {
 			return
 		}
-		j := item
-		q.execWG.Add(1)
-		if q.sem != nil {
-			// 阻塞式获取，若 Close 触发则退出
+		if useSem {
 			select {
 			case q.sem <- struct{}{}:
 			case <-q.exitC:
-				q.execWG.Done()
 				return
 			case <-q.ctx.Done():
-				q.execWG.Done()
 				return
 			}
 		}
+		q.execWG.Add(1)
+		j := item
 		go func() {
 			defer q.execWG.Done()
-			if q.sem != nil {
+			if useSem {
 				defer func() { <-q.sem }()
 			}
 			q.executeOneWithRetry(j)
@@ -147,6 +196,9 @@ func (q *baseQueue) close() error {
 
 func (q *baseQueue) isClosed() bool { return q.started.Get() == 0 }
 
+// tickerErrorBackoffMax ticker 连续失败时的退避上限
+const tickerErrorBackoffMax = 30 * time.Second
+
 func (q *baseQueue) start(f func(item *Item) error, ts ...ticker) error {
 	if !q.started.CompareAndSwap(0, 1) {
 		return ErrTopicQueueHasStarted
@@ -161,13 +213,24 @@ func (q *baseQueue) start(f func(item *Item) error, ts ...ticker) error {
 			_ = t.Stop()
 			q.wg.Done()
 		}()
+		// 连续失败次数；每次成功重置为 0
+		consecutiveErrs := 0
 		for {
 			select {
 			case <-t.C:
-				_ = t.Reset(ti.d)
-				if err := ti.f(); err != nil {
+				err := ti.f()
+				next := ti.d
+				if err != nil {
 					q.log.Errorf("topic=%s ticker error: %v", q.topic, err)
+					consecutiveErrs++
+					if backoff := backoffDuration(ti.d, consecutiveErrs, tickerErrorBackoffMax); backoff > next {
+						next = backoff
+					}
+				} else if consecutiveErrs > 0 {
+					q.log.Infof("topic=%s ticker recovered after %d consecutive errors", q.topic, consecutiveErrs)
+					consecutiveErrs = 0
 				}
+				_ = t.Reset(next)
 			case <-q.exitC:
 				return
 			case <-q.ctx.Done():
@@ -185,6 +248,27 @@ func (q *baseQueue) start(f func(item *Item) error, ts ...ticker) error {
 		}(ti)
 	}
 	return nil
+}
+
+// backoffDuration 计算 base * 2^(failures-1)，上限 max
+func backoffDuration(base time.Duration, failures int, maxBackoff time.Duration) time.Duration {
+	if failures <= 0 {
+		return base
+	}
+	if base <= 0 {
+		base = 1 * time.Second
+	}
+	// 防止移位溢出
+	const maxShift = 30
+	shift := failures - 1
+	if shift > maxShift {
+		shift = maxShift
+	}
+	d := base * (1 << shift)
+	if maxBackoff > 0 && (d > maxBackoff || d < base) { // d<base 视为溢出
+		return maxBackoff
+	}
+	return d
 }
 
 type memQueue struct {
@@ -221,11 +305,7 @@ func (q *memQueue) onFailed(item *Item) error {
 	}
 	failedCount++
 	if failedCount > q.opts.GetRetryTimes() {
-		if f := q.opts.GetOnDeadLetter(); f != nil {
-			f(item)
-		} else {
-			q.log.Warnf("topic=%s dead letter: %v", q.topic, item)
-		}
+		q.invokeDeadLetter(item)
 		return nil
 	}
 	retry := &Item{
@@ -316,6 +396,9 @@ func (q *memQueue) Close() error { return q.close() }
 func (q *memQueue) Push(item *Item) error {
 	if q.isClosed() {
 		return ErrTopicQueueHasClosed
+	}
+	if err := q.prepareItem(item); err != nil {
+		return err
 	}
 	delaySecond := item.GetDelaySecond()
 	if delaySecond < 0 {

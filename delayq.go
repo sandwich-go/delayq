@@ -10,6 +10,7 @@ var (
 	ErrTopicQueueHasClosed     = errors.New("topic queue has closed")
 	ErrTopicQueueHasStarted    = errors.New("topic queue has started")
 	ErrTopicQueueHasRegistered = errors.New("topic queue has registered")
+	ErrNilItem                 = errors.New("item is nil")
 )
 
 // Status 延迟队列状态

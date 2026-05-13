@@ -227,7 +227,27 @@ dq := delayq.New(delayq.WithLogger(delayq.NopLogger())) // 关闭日志
 
 ## 注意事项
 
+### Topic 路由
+
+`Queue.Push(item)` 的路由规则：
+
+1. `Item.Topic` 非空 → 路由到该 topic（不存在则返回 `ErrTopicQueueHasClosed`）
+2. `Item.Topic` 为空 + 仅注册一个 topic → 自动路由并回填 `Item.Topic`
+3. `Item.Topic` 为空 + 多个 topic / 0 个 topic → 拒绝（`ErrTopicQueueHasClosed`）
+
+直接使用 `TopicQueue.Push` 时，`Item.Topic` 会被强制覆盖为该 TopicQueue 的 topic 名（用户错填的会有 DEBUG 日志）。
+
+### Value 大小
+
+- 强烈建议 `Item.Value <= 1KB`，仅存储业务 ID/引用，不要把完整 payload 写入。
+- 单个 Value `>= 4KB` 会触发 WARN 日志（不阻断）。
+- 在 Redis 模式下 ZSET 成员太大会显著拖慢 ZRANGEBYSCORE。
+
+### 其他
+
 - **Item.Value 在 Redis 模式下不可重复**：底层使用 ZSET，相同 value 后推会覆盖前者。请通过额外字段（如自增 ID）保证唯一性。
 - **VisibilityTimeout > Handler 最大耗时**：否则会重复派发。
 - **死信不会自动清理 failed Hash**：`OnDeadLetter` 触发后 delayq 会执行 ack（清除 doing/failed/delay），无需手动处理。
 - **时间轮粒度 1 秒**：内存队列最小延迟 1 秒；亚秒级延迟请考虑其他实现。
+- **OnDeadLetter 回调 panic 会被捕获**：用户回调 panic 不会导致队列崩溃，会以 ERROR 日志记录。
+- **ticker 错误指数退避**：Redis poll/reclaim 或时间轮 tick 出错时会自动退避，最长 30 秒，恢复后立即重置。
