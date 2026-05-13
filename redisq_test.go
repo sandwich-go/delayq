@@ -25,9 +25,13 @@ func (s redissonScript) Eval(ctx context.Context, keys []string, args ...interfa
 }
 
 // newTestRedisClient 使用 redisson 内置的 WithT mock 启动 miniredis
+// WithDevelopment(false) 关闭开发模式校验，避免 miniredis 不支持的 CLIENT TRACKING 等命令产生噪音
 func newTestRedisClient(t *testing.T) redisson.Cmdable {
 	t.Helper()
-	return redisson.MustNewClient(redisson.NewConf(redisson.WithT(t)))
+	return redisson.MustNewClient(redisson.NewConf(
+		redisson.WithT(t),
+		redisson.WithDevelopment(false),
+	))
 }
 
 func newTestBuilder(t *testing.T) RedisScriptBuilder {
