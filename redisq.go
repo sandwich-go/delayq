@@ -312,7 +312,7 @@ func (q *redisQueue) poll() error {
 	}
 	res, err := q.move(q.delaySetKey, q.doingSetKey, now, now+visTimeout)
 	if err != nil {
-		q.monitorCount("delayq_poll_error")
+		q.monitorCount(MetricPollError)
 		return err
 	}
 	// 收集 values 用于批量查询失败计数
@@ -372,9 +372,9 @@ func (q *redisQueue) reclaim() error {
 	now := unix()
 	items, err := q.move(q.doingSetKey, q.delaySetKey, now, now)
 	if err != nil {
-		q.monitorCount("delayq_reclaim_error")
+		q.monitorCount(MetricReclaimError)
 	} else {
-		q.monitorCount("delayq_reclaim", len(items)/2)
+		q.monitorCount(MetricReclaim, len(items)/2)
 	}
 	return err
 }

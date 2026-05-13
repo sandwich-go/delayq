@@ -55,11 +55,12 @@ func TestCollector_DescribeAndCollect(t *testing.T) {
 		t.Fatalf("desc should contain metric name, got %v", descs)
 	}
 
-	// Collect
-	metricCh := make(chan prometheus.Metric, 8)
+	// Collect 同时验证 queue_length 与 in_flight 两类指标
+	metricCh := make(chan prometheus.Metric, 16)
 	col.Collect(metricCh)
 	close(metricCh)
-	got := map[string]float64{}
+	queueLen := map[string]float64{}
+	inFlight := map[string]float64{}
 	for m := range metricCh {
 		var pb dto.Metric
 		if err := m.Write(&pb); err != nil {
@@ -71,13 +72,22 @@ func TestCollector_DescribeAndCollect(t *testing.T) {
 				queueLabel = lp.GetValue()
 			}
 		}
-		got[queueLabel] = pb.GetGauge().GetValue()
+		desc := m.Desc().String()
+		if strings.Contains(desc, "queue_length") {
+			queueLen[queueLabel] = pb.GetGauge().GetValue()
+		} else if strings.Contains(desc, "in_flight") {
+			inFlight[queueLabel] = pb.GetGauge().GetValue()
+		}
 	}
-	if got["topic-x"] != 2 {
-		t.Fatalf("topic-x want=2 got=%v", got["topic-x"])
+	if queueLen["topic-x"] != 2 {
+		t.Fatalf("topic-x queue_length want=2 got=%v", queueLen["topic-x"])
 	}
-	if got["topic-y"] != 1 {
-		t.Fatalf("topic-y want=1 got=%v", got["topic-y"])
+	if queueLen["topic-y"] != 1 {
+		t.Fatalf("topic-y queue_length want=1 got=%v", queueLen["topic-y"])
+	}
+	// 没有 handler 在跑，in_flight 应为 0
+	if inFlight["topic-x"] != 0 || inFlight["topic-y"] != 0 {
+		t.Fatalf("in_flight should be 0, got %v", inFlight)
 	}
 }
 

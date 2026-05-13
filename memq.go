@@ -55,11 +55,16 @@ type baseQueue struct {
 	execWG sync.WaitGroup
 	// sem worker pool 信号量，nil 表示不限制
 	sem chan struct{}
+	// inFlight 当前正在执行 handler 的 goroutine 数
+	inFlight atomicInt64
 
 	exitC     chan struct{}
 	closeOnce sync.Once
 	started   atomicInt32
 }
+
+// InFlight 返回当前正在执行 handler 的数量
+func (q *baseQueue) InFlight() int64 { return q.inFlight.Get() }
 
 func newBaseQueue(ctx context.Context, topic string, opts *Options) *baseQueue {
 	q := &baseQueue{
@@ -120,9 +125,12 @@ func (q *baseQueue) prepareItem(item *Item) error {
 	return nil
 }
 
-func (q *baseQueue) executeOne(item *Item) (err error) {
+// executeOne 调用 handler 并区分 panic 与 error。
+// panicked=true 表示 handler 抛出 panic（已被捕获），err 已包装成 error。
+func (q *baseQueue) executeOne(item *Item) (err error, panicked bool) {
 	defer func() {
 		if r := recover(); r != nil {
+			panicked = true
 			err = fmt.Errorf("handle panic: %v", r)
 			q.log.Errorf("topic=%s handle panic: %v", q.topic, r)
 		}
@@ -137,6 +145,14 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 			q.log.Errorf("topic=%s ack callback panic: %v item=%v", q.topic, r, item)
 		}
 	}()
+	// inFlight 计数与耗时统计
+	q.inFlight.Add(1)
+	start := nowFunc()
+	defer func() {
+		q.inFlight.Add(-1)
+		q.monitorObserve(MetricHandleDurationMs, nowFunc().Sub(start).Milliseconds())
+	}()
+
 	// manual ack 模式：派发给用户回调 + Acker，由用户决定何时 ack
 	if q.manualHandler != nil {
 		acker := &itemAcker{q: q, item: item}
@@ -145,6 +161,7 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 			defer func() {
 				if r := recover(); r != nil {
 					q.log.Errorf("topic=%s manual handler panic: %v", q.topic, r)
+					q.monitorCount(MetricHandlePanic)
 					acker.Nack(fmt.Errorf("handler panic: %v", r))
 				}
 			}()
@@ -152,7 +169,10 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 		}()
 		return
 	}
-	err := q.executeOne(item)
+	err, panicked := q.executeOne(item)
+	if panicked {
+		q.monitorCount(MetricHandlePanic)
+	}
 	if err != nil {
 		if ferr := q.failed.call(item); ferr != nil {
 			q.log.Errorf("topic=%s failed callback error: %v item=%v", q.topic, ferr, item)

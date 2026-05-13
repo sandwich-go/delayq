@@ -35,6 +35,8 @@ var (
 type Status struct {
 	// QueueLength 每个 topic 当前 delay 集中等待执行的 item 数（不含 doing 中的）
 	QueueLength map[string]int64
+	// InFlight 每个 topic 当前正在执行 handler 的 goroutine 数
+	InFlight map[string]int64
 }
 
 // Queue 多 topic 延迟队列外观接口。通过 New 创建。

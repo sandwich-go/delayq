@@ -11,6 +11,12 @@
 - **Get(topic, value)**：查询某 value 是否存在于队列中，返回剩余延迟与存在标记。
 - **Cancel(topic, value)**：取消队列中匹配 value 的 item（覆盖 delay 与 doing 集，已开始的 handler 无法终止）。
 - **手动 ack 模式**：`StartManualAck(topic, func(item, Acker))`，业务显式调用 `Acker.Ack/Nack`，适合异步处理。
+- **新监控指标**：
+  - `delayq_handle_panic` (Counter)：精准计数 handler panic 次数
+  - `delayq_handle_duration_ms` (Histogram observation)：handler 执行耗时毫秒数
+  - `delayq_status_in_flight` (Gauge)：每 topic 当前在途 handler 数
+- **`Status.InFlight`**：`Status()` 返回结构新增 `InFlight map[string]int64` 字段。
+- **`MetricXxx` 常量**：提供所有 metric 名的 `MetricProduce`/`MetricHandlePanic` 等常量，避免拼写错误。
 - **CI/CD**：GitHub Actions 流水线（lint/test/coverage 三 job），golangci-lint v2 配置 + 11 个 linter，Makefile 标准化构建命令。
 - **proto 源**：补充 `item.proto` 源文件 + `make proto` 生成命令。
 - **`.gitignore`**：覆盖 IDE/coverage/OS 常见忽略项。
@@ -20,8 +26,9 @@
 - **Item.proto** 新增 `priority` 字段（field 4），向后兼容（旧客户端忽略未知字段）。
 - **Redis ZSET score 改为 float64**：原 int64 score 在加入 priority 后改为 float64（`exec_ts - priority * 1e-6`），不影响秒级排序。
 - **Queue 接口扩展**：新增 `PushBatch / Get / Cancel / StartManualAck` 四个方法。
-- **TopicQueue 接口扩展**：同上。
+- **TopicQueue 接口扩展**：新增 `PushBatch / Get / Cancel / InFlight / StartManualAck` 五个方法。
 - **依赖**：`go.mod` 锁定 `redisson v1.2.22`（兼容 go 1.20），生产代码不直接 import。
+- **panic 计数**：handler panic 现在同时计入 `handle_error` 和 `handle_panic`，便于报警同时拿到 panic 与总错误率。
 
 ### Fixed (修复)
 

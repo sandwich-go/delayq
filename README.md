@@ -249,21 +249,45 @@ prometheus.MustRegister(dq.Collector())
 
 ```go
 dq := delayq.New(delayq.WithMonitorCounter(func(metric string, value int64, labels prometheus.Labels) {
-    counter.WithLabelValues(metric, labels["Queue"]).Add(float64(value))
+    switch metric {
+    case delayq.MetricHandleDurationMs:
+        // 耗时上报：value 为毫秒数，可直接喂给 Histogram
+        histogram.WithLabelValues(labels["Queue"]).Observe(float64(value) / 1000.0)
+    default:
+        counter.WithLabelValues(metric, labels["Queue"]).Add(float64(value))
+    }
 }))
 ```
 
-可能的 metric 名：
+可用 metric 名（也提供 `MetricXxx` 常量）：
 
-| Metric | 触发时机 |
-|--------|---------|
-| `delayq_produce` | Push 成功 |
-| `delayq_produce_error` | Push 失败 |
-| `delayq_handle` | Handler 处理成功 |
-| `delayq_handle_error` | Handler 返回 error 或 panic |
-| `delayq_poll_error` | Redis poll 脚本失败 |
-| `delayq_reclaim` | 一次 reclaim 搬运的 item 数 |
-| `delayq_reclaim_error` | reclaim 脚本失败 |
+| Metric | 类型 | 触发时机 |
+|--------|------|---------|
+| `delayq_produce` | Counter | Push 成功 |
+| `delayq_produce_error` | Counter | Push 失败 |
+| `delayq_handle` | Counter | Handler 处理成功 |
+| `delayq_handle_error` | Counter | Handler 返回 error 或 panic |
+| `delayq_handle_panic` | Counter | Handler 抛出 panic（已被恢复） |
+| `delayq_handle_duration_ms` | Histogram observation | Handler 执行耗时（毫秒，单次 Observe） |
+| `delayq_poll_error` | Counter | Redis poll 脚本失败 |
+| `delayq_reclaim` | Counter | 一次 reclaim 搬运的 item 数 |
+| `delayq_reclaim_error` | Counter | reclaim 脚本失败 |
+
+> 注：`delayq_handle_panic` 与 `delayq_handle_error` 同时计数 panic 路径——前者用于精准报警 panic，后者用于通用失败率。
+
+### Status() 实时状态
+
+`Queue.Status()` 返回每个 topic 的等待数与在途处理数，便于自定义看板：
+
+```go
+s := dq.Status()
+for topic, waiting := range s.QueueLength {
+    inFlight := s.InFlight[topic]
+    fmt.Printf("topic=%s waiting=%d in_flight=%d\n", topic, waiting, inFlight)
+}
+```
+
+`Collector` 也会同时暴露两类 Gauge：`<Name>_status_queue_length` 与 `<Name>_status_in_flight`。
 
 ## 日志
 

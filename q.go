@@ -22,6 +22,8 @@ type TopicQueue interface {
 	PushBatch([]*Item) error
 	// Length 返回 delay 集中等待执行的 item 数（不含 doing 中的）
 	Length() int64
+	// InFlight 返回当前正在执行 handler 的 goroutine 数
+	InFlight() int64
 	// Get 查询 value 是否在队列中，返回剩余延迟（doing 中返回 0）。
 	// 不区分 delay/doing 状态。
 	Get(value []byte) (remaining time.Duration, exists bool, err error)
@@ -66,10 +68,15 @@ func (q *queue) Status() Status {
 	q.mx.Lock()
 	defer q.mx.Unlock()
 
-	var s Status
-	s.QueueLength = make(map[string]int64)
+	s := Status{
+		QueueLength: make(map[string]int64),
+		InFlight:    make(map[string]int64),
+	}
 	q.topicQueues.Range(func(key, value any) bool {
-		s.QueueLength[key.(string)] = value.(TopicQueue).Length()
+		topic := key.(string)
+		tq := value.(TopicQueue)
+		s.QueueLength[topic] = tq.Length()
+		s.InFlight[topic] = tq.InFlight()
 		return true
 	})
 	return s
@@ -80,14 +87,22 @@ func (q *queue) StartTopicQueue(tq TopicQueue, f func(*Item) error) error {
 	if ok {
 		return ErrTopicQueueHasRegistered
 	}
-	return tq.Start(func(item *Item) error {
-		err := f(item)
-		if err != nil {
-			q.monitorCounter("delayq_handle_error", tq.Topic())
-		} else {
-			q.monitorCounter("delayq_handle", tq.Topic())
-		}
-		return err
+	topic := tq.Topic()
+	return tq.Start(func(item *Item) (err error) {
+		// 即使 panic 也要让 monitor 计数 + 重新抛给 baseQueue 让其捕获并打 panic metric
+		defer func() {
+			if r := recover(); r != nil {
+				q.monitorCounter(MetricHandleError, topic)
+				panic(r)
+			}
+			if err != nil {
+				q.monitorCounter(MetricHandleError, topic)
+			} else {
+				q.monitorCounter(MetricHandle, topic)
+			}
+		}()
+		err = f(item)
+		return
 	})
 }
 
@@ -129,12 +144,12 @@ type ackerWithMonitor struct {
 }
 
 func (a ackerWithMonitor) Ack() {
-	a.q.monitorCounter("delayq_handle", a.topic)
+	a.q.monitorCounter(MetricHandle, a.topic)
 	a.inner.Ack()
 }
 
 func (a ackerWithMonitor) Nack(err error) {
-	a.q.monitorCounter("delayq_handle_error", a.topic)
+	a.q.monitorCounter(MetricHandleError, a.topic)
 	a.inner.Nack(err)
 }
 
@@ -172,7 +187,7 @@ func (q *queue) Push(item *Item) error {
 	if topic == "" {
 		topic = q.resolveSingleTopic()
 		if topic == "" {
-			q.monitorCounter("delayq_produce_error", "")
+			q.monitorCounter(MetricProduceError, "")
 			return ErrTopicQueueHasClosed
 		}
 		// 回填 Topic，方便后续 handler 访问
@@ -186,9 +201,9 @@ func (q *queue) Push(item *Item) error {
 		err = val.(TopicQueue).Push(item)
 	}
 	if err != nil {
-		q.monitorCounter("delayq_produce_error", topic)
+		q.monitorCounter(MetricProduceError, topic)
 	} else {
-		q.monitorCounter("delayq_produce", topic)
+		q.monitorCounter(MetricProduce, topic)
 	}
 	return err
 }
@@ -202,12 +217,12 @@ func (q *queue) PushBatch(items []*Item) error {
 	}
 	topic, err := q.resolveBatchTopic(items)
 	if err != nil {
-		q.monitorCounter("delayq_produce_error", topic)
+		q.monitorCounter(MetricProduceError, topic)
 		return err
 	}
 	val, ok := q.topicQueues.Load(topic)
 	if !ok {
-		q.monitorCounter("delayq_produce_error", topic)
+		q.monitorCounter(MetricProduceError, topic)
 		return ErrTopicQueueHasClosed
 	}
 	tq, ok := val.(interface{ PushBatch([]*Item) error })
@@ -215,16 +230,16 @@ func (q *queue) PushBatch(items []*Item) error {
 		// 后备：逐个 Push
 		for _, it := range items {
 			if e := val.(TopicQueue).Push(it); e != nil {
-				q.monitorCounter("delayq_produce_error", topic)
+				q.monitorCounter(MetricProduceError, topic)
 				return e
 			}
 		}
 	} else if e := tq.PushBatch(items); e != nil {
-		q.monitorCounter("delayq_produce_error", topic)
+		q.monitorCounter(MetricProduceError, topic)
 		return e
 	}
 	for range items {
-		q.monitorCounter("delayq_produce", topic)
+		q.monitorCounter(MetricProduce, topic)
 	}
 	return nil
 }

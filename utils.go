@@ -61,3 +61,16 @@ func (i *atomicInt32) Get() int32 {
 func (i *atomicInt32) CompareAndSwap(oldval, newval int32) (swapped bool) {
 	return atomic.CompareAndSwapInt32((*int32)(i), oldval, newval)
 }
+
+// atomicInt64 is an atomic type-safe wrapper for int64 values.
+type atomicInt64 int64
+
+// Add atomically adds delta and returns the new value.
+func (i *atomicInt64) Add(delta int64) int64 {
+	return atomic.AddInt64((*int64)(i), delta)
+}
+
+// Get atomically loads the wrapped int64.
+func (i *atomicInt64) Get() int64 {
+	return atomic.LoadInt64((*int64)(i))
+}
