@@ -13,6 +13,7 @@
 package delayq
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -31,6 +32,10 @@ var (
 	ErrNilItem = errors.New("item is nil")
 	// ErrValueIndexDisabled 在 DisableValueIndex=true 时调用 Get/Cancel 返回此错误
 	ErrValueIndexDisabled = errors.New("value index is disabled, Get/Cancel unavailable")
+	// ErrRateLimited Push 被 token bucket 限流拒绝
+	ErrRateLimited = errors.New("push rate limited")
+	// ErrDraining Drain 期间拒绝新 push
+	ErrDraining = errors.New("queue is draining")
 )
 
 // Status 延迟队列汇总状态
@@ -63,6 +68,11 @@ type Queue interface {
 	StartTopicQueue(tq TopicQueue, f func(*Item) error) error
 	// Stop 关闭指定主题的延迟队列；topic 不存在时返回 nil
 	Stop(topic string) error
+	// Drain 让所有 topic 进入 drain 状态：拒绝新 Push，等待所有现有 item 消化完毕。
+	// ctx 取消时提前返回 ctx.Err()。Drain 不关闭队列。
+	Drain(ctx context.Context) error
+	// CloseGracefully 等价于 Drain(ctx) 后 Close()。便于优雅退出。
+	CloseGracefully(ctx context.Context) error
 	// Close 关闭所有延迟队列
 	Close() error
 }

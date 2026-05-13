@@ -201,15 +201,23 @@ func (q *redisQueue) Push(item *Item) error {
 	return err
 }
 
-// PushBatch 批量推送，原子地通过单个 Lua 脚本完成所有 ZADD
+// PushBatch 批量推送，原子地通过单个 Lua 脚本完成所有 ZADD。
+// 限流时整批一次性扣 len(items) 个 token，不足直接拒绝整批。
 func (q *redisQueue) PushBatch(items []*Item) error {
 	if len(items) == 0 {
 		return nil
 	}
+	if q.draining.Get() == 1 {
+		return ErrDraining
+	}
+	if q.limiter != nil && !q.limiter.AllowN(len(items)) {
+		q.monitorCount(MetricRateLimited, len(items))
+		return ErrRateLimited
+	}
 	args := make([]interface{}, 0, len(items)*2)
 	now := unix()
 	for _, it := range items {
-		if err := q.prepareItem(it); err != nil {
+		if err := q.prepareItemNoRate(it); err != nil {
 			return err
 		}
 		delay := it.GetDelaySecond()
@@ -276,6 +284,23 @@ func (q *redisQueue) Cancel(value []byte) (bool, error) {
 }
 
 func (q *redisQueue) Close() error { return q.close() }
+
+// Drain 进入 drain 状态：拒绝新 Push，等待所有现有 item 处理完毕。
+// 等待条件：delay 集 + doing 集 + inFlight 全部为 0。
+func (q *redisQueue) Drain(ctx context.Context) error {
+	return q.drain(ctx, q.lengthAll)
+}
+
+// lengthAll 返回 delay 集 + doing 集长度之和（用于 Drain 判定）
+func (q *redisQueue) lengthAll() int64 {
+	res, err := q.runScript(q.opCtx(), q.lengthScript, []string{q.delaySetKey, q.doingSetKey})
+	if err != nil || len(res) < 2 {
+		return 0
+	}
+	d, _ := res[0].(int64)
+	dn, _ := res[1].(int64)
+	return d + dn
+}
 
 func (q *redisQueue) Start(f func(item *Item) error) error {
 	return q.start(f, ticker{d: 1 * time.Second, f: q.poll}, ticker{d: 1 * time.Second, f: q.reclaim})

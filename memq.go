@@ -45,6 +45,7 @@ type baseQueue struct {
 	failed        safeHandleItemFunc
 	success       safeHandleItemFunc
 	manualHandler func(*Item, Acker) // 非 nil 时启用手动 ack 模式
+	limiter       *tokenBucket       // Push 限流器，nil 表示不限流
 
 	// wg 用于 ticker goroutine 的等待
 	wg sync.WaitGroup
@@ -58,6 +59,8 @@ type baseQueue struct {
 	exitC     chan struct{}
 	closeOnce sync.Once
 	started   atomicInt32
+	// draining 1 表示进入 drain 状态，拒绝新 Push 但允许现有 item 继续派发
+	draining atomicInt32
 }
 
 // InFlight 返回当前正在执行 handler 的数量
@@ -76,6 +79,13 @@ func newBaseQueue(ctx context.Context, topic string, opts *Options) *baseQueue {
 	if n := opts.GetMaxConcurrency(); n > 0 {
 		q.sem = make(chan struct{}, n)
 	}
+	if rate := opts.GetPushRatePerSec(); rate > 0 {
+		burst := opts.GetPushBurst()
+		if burst <= 0 {
+			burst = rate
+		}
+		q.limiter = newTokenBucket(rate, burst)
+	}
 	return q
 }
 
@@ -83,6 +93,32 @@ func (q *baseQueue) Topic() string { return q.topic }
 
 // largeValueWarnThreshold Push 时 Value 超过该字节数会记录 WARN 日志（不阻断）
 const largeValueWarnThreshold = 4 * 1024
+
+// drain 进入 drain 状态，拒绝新 Push 并等待所有 item 消化完毕。
+// 由 TopicQueue 的 Drain 方法调用，需要 lengthFn 提供该队列的 Length 实现。
+func (q *baseQueue) drain(ctx context.Context, lengthFn func() int64) error {
+	if q.isClosed() {
+		return ErrTopicQueueHasClosed
+	}
+	q.draining.Set(1)
+	defer q.draining.Set(0)
+
+	// 轮询直到 Length 为 0 且 inFlight 为 0
+	t := time.NewTicker(50 * time.Millisecond)
+	defer t.Stop()
+	for {
+		if lengthFn() == 0 && q.inFlight.Get() == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-q.exitC:
+			return ErrTopicQueueHasClosed
+		case <-t.C:
+		}
+	}
+}
 
 // invokeDeadLetter 安全调用用户的 OnDeadLetter 回调，捕获 panic
 func (q *baseQueue) invokeDeadLetter(item *Item) {
@@ -100,14 +136,36 @@ func (q *baseQueue) invokeDeadLetter(item *Item) {
 }
 
 // prepareItem 在 Push 前对 item 进行规范化与告警：
-//   - 注入 topic（如果用户没填）
-//   - 校验 value 大小并记录 WARN 日志
+//   - 检查 drain 状态
+//   - 检查限流（消耗 1 token）
+//   - 注入 topic、校验 value 大小
 //
 // 返回 nil 表示通过；返回 error 表示拒绝入队。
 func (q *baseQueue) prepareItem(item *Item) error {
 	if item == nil {
 		return ErrNilItem
 	}
+	if q.draining.Get() == 1 {
+		return ErrDraining
+	}
+	if q.limiter != nil && !q.limiter.Allow() {
+		q.monitorCount(MetricRateLimited)
+		return ErrRateLimited
+	}
+	return q.normalizeItem(item)
+}
+
+// prepareItemNoRate 仅做 normalize，不检查 drain/限流（由调用方负责）。
+// 用于 PushBatch 中已统一扣完 token 的场景。
+func (q *baseQueue) prepareItemNoRate(item *Item) error {
+	if item == nil {
+		return ErrNilItem
+	}
+	return q.normalizeItem(item)
+}
+
+// normalizeItem 注入 topic 并对大 value 记 WARN
+func (q *baseQueue) normalizeItem(item *Item) error {
 	// 如果用户没填 Topic 或填错（非该 queue 的 topic），用 queue.topic 覆盖
 	if item.GetTopic() != q.topic {
 		if item.GetTopic() != "" {
@@ -142,8 +200,7 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 			q.log.Errorf("topic=%s ack callback panic: %v item=%v", q.topic, r, item)
 		}
 	}()
-	// inFlight 计数与耗时统计
-	q.inFlight.Add(1)
+	// inFlight.Add(1) 已由 execute 同步执行，这里只负责 -1
 	start := nowFunc()
 	defer func() {
 		q.inFlight.Add(-1)
@@ -207,6 +264,9 @@ func (q *baseQueue) execute(items ...*Item) {
 			}
 		}
 		q.execWG.Add(1)
+		// 同步增加 inFlight，避免 Drain 在派发线程退出锁后到子 goroutine 启动前
+		// 错误地观察到 inFlight=0
+		q.inFlight.Add(1)
 		j := item
 		go func() {
 			defer q.execWG.Done()
@@ -488,6 +548,12 @@ func (q *memQueue) Length() int64 {
 
 func (q *memQueue) Close() error { return q.close() }
 
+// Drain 进入 drain 状态：拒绝新 Push，等待所有现有 item 派发完毕（Length=0 && InFlight=0）。
+// ctx 取消时提前返回 ctx.Err()。Drain 后队列仍可用（draining 标志被清除）。
+func (q *memQueue) Drain(ctx context.Context) error {
+	return q.drain(ctx, q.Length)
+}
+
 // Push 把 item 插入时间轮。同槽位中按 Priority 降序排列。
 func (q *memQueue) Push(item *Item) error {
 	if q.isClosed() {
@@ -508,6 +574,7 @@ func (q *memQueue) Push(item *Item) error {
 
 // PushBatch 批量推送多个 item（持锁一次性插入全部）。
 // 任何一个 item 校验失败都会终止批次（已入队的不会回滚）。
+// 限流时整批一次性扣 len(items) 个 token，不足直接拒绝整批。
 func (q *memQueue) PushBatch(items []*Item) error {
 	if len(items) == 0 {
 		return nil
@@ -515,8 +582,16 @@ func (q *memQueue) PushBatch(items []*Item) error {
 	if q.isClosed() {
 		return ErrTopicQueueHasClosed
 	}
+	if q.draining.Get() == 1 {
+		return ErrDraining
+	}
+	if q.limiter != nil && !q.limiter.AllowN(len(items)) {
+		q.monitorCount(MetricRateLimited, len(items))
+		return ErrRateLimited
+	}
+	// 此处 prepareItem 会被旁路（用 prepareItemNoRate）以避免重复扣 token
 	for _, it := range items {
-		if err := q.prepareItem(it); err != nil {
+		if err := q.prepareItemNoRate(it); err != nil {
 			return err
 		}
 	}

@@ -36,6 +36,9 @@ type TopicQueue interface {
 	// StartManualAck 启动手动 ack 模式：业务必须显式调用 Acker.Ack 或 Nack。
 	// 与 Start 互斥，二选一。
 	StartManualAck(func(item *Item, ack Acker)) error
+	// Drain 进入 drain 状态：拒绝新 Push，等待所有现有 item 派发完毕。
+	// ctx 取消时提前返回 ctx.Err()。Drain 不关闭队列。
+	Drain(ctx context.Context) error
 	// Close 关闭队列，等待在途 handler 返回
 	Close() error
 }
@@ -175,6 +178,40 @@ func (q *queue) Close() error {
 	})
 	q.cancel()
 	return err
+}
+
+// Drain 让所有 topic 进入 drain 状态并并行等待消化完毕
+func (q *queue) Drain(ctx context.Context) error {
+	var firstErr error
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	q.topicQueues.Range(func(_, value any) bool {
+		tq := value.(TopicQueue)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := tq.Drain(ctx); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}()
+		return true
+	})
+	wg.Wait()
+	return firstErr
+}
+
+// CloseGracefully 先 Drain 再 Close
+func (q *queue) CloseGracefully(ctx context.Context) error {
+	if err := q.Drain(ctx); err != nil {
+		// 即使 Drain 失败也尝试 Close 释放资源
+		_ = q.Close()
+		return err
+	}
+	return q.Close()
 }
 
 // Push 把 item 投递到对应 topic 的队列。

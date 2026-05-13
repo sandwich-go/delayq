@@ -2,7 +2,24 @@
 
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.0.0] - 待发布
+
+首个生产可用版本，详见 [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md)。
+
+### Added (本轮新增 - F4/F5/F6/F8)
+
+- **F4 限流**：`WithPushRatePerSec(rate)` + `WithPushBurst(burst)` token bucket，超限返回 `ErrRateLimited`。新增 `MetricRateLimited` 指标。
+- **F5 优雅退出**：
+  - `TopicQueue.Drain(ctx)` / `Queue.Drain(ctx)` 拒绝新 Push 并等待消化
+  - `Queue.CloseGracefully(ctx)` = Drain + Close
+  - 新增 `ErrDraining` 错误
+- **F6 examples/**：4 个独立可运行示例（memory / redis / manualack / graceful）
+- **F8 fuzz + chaos**：`FuzzPush / FuzzPushBatch / FuzzParseInt64 / FuzzComputeRetryDelay` + 4 个 chaos 测试
+
+### Fixed (本轮)
+
+- 通过 fuzz 发现并修复 `computeRetryDelay` 在 `MaxRetryInterval<0` 时返回负值的 bug
+- 优化 `inFlight` 计数时机：从子 goroutine 移到 `execute` 派发线程，避免 Drain 早退
 
 ### Performance (性能)
 

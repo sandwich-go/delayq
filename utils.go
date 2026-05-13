@@ -30,18 +30,25 @@ func computeRetryDelay(opts *Options, failedCount int) time.Duration {
 		base = 0
 	}
 	backoff := opts.GetRetryBackoff()
+	maxInterval := opts.GetMaxRetryInterval()
+	if maxInterval < 0 {
+		maxInterval = 0
+	}
 	d := base
 	if backoff > 1.0 {
 		mult := math.Pow(backoff, float64(failedCount-1))
 		// 防止溢出
 		if math.IsInf(mult, 0) || mult > float64(math.MaxInt64)/float64(base+1) {
-			d = opts.GetMaxRetryInterval()
+			d = maxInterval
 		} else {
 			d = time.Duration(float64(base) * mult)
 		}
 	}
-	if max := opts.GetMaxRetryInterval(); max > 0 && d > max {
-		d = max
+	if maxInterval > 0 && d > maxInterval {
+		d = maxInterval
+	}
+	if d < 0 {
+		d = 0
 	}
 	return d
 }

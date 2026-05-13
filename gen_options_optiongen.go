@@ -39,6 +39,10 @@ type Options struct {
 	RetryIntervalFunc func(failedCount int) time.Duration
 	// annotation@DisableValueIndex(comment="禁用 value->node 索引（内存队列）；启用后 Get/Cancel 不可用，但 Push 性能提升约 40%")
 	DisableValueIndex bool
+	// annotation@PushRatePerSec(comment="Push 限流（每秒允许 token 数），<=0 表示不限流")
+	PushRatePerSec float64
+	// annotation@PushBurst(comment="Push 限流 burst 容量，<=0 时取 PushRatePerSec 同值")
+	PushBurst float64
 }
 
 // newConfig new Options
@@ -161,6 +165,20 @@ func WithDisableValueIndex(v bool) Option {
 	}
 }
 
+// WithPushRatePerSec Push 限流（每秒允许 token 数），<=0 表示不限流
+func WithPushRatePerSec(v float64) Option {
+	return func(cc *Options) {
+		cc.PushRatePerSec = v
+	}
+}
+
+// WithPushBurst Push 限流 burst 容量，<=0 时取 PushRatePerSec 同值
+func WithPushBurst(v float64) Option {
+	return func(cc *Options) {
+		cc.PushBurst = v
+	}
+}
+
 // InstallOptionsWatchDog the installed func will called when newConfig  called
 func InstallOptionsWatchDog(dog func(cc *Options)) { watchDogOptions = dog }
 
@@ -187,6 +205,8 @@ func newDefaultOptions() *Options {
 		WithMaxRetryInterval(60 * time.Second),
 		WithRetryIntervalFunc(nil),
 		WithDisableValueIndex(false),
+		WithPushRatePerSec(0),
+		WithPushBurst(0),
 	} {
 		opt(cc)
 	}
@@ -213,6 +233,8 @@ func (cc *Options) GetRetryIntervalFunc() func(failedCount int) time.Duration {
 	return cc.RetryIntervalFunc
 }
 func (cc *Options) GetDisableValueIndex() bool { return cc.DisableValueIndex }
+func (cc *Options) GetPushRatePerSec() float64  { return cc.PushRatePerSec }
+func (cc *Options) GetPushBurst() float64       { return cc.PushBurst }
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
@@ -230,6 +252,8 @@ type OptionsVisitor interface {
 	GetMaxRetryInterval() time.Duration
 	GetRetryIntervalFunc() func(failedCount int) time.Duration
 	GetDisableValueIndex() bool
+	GetPushRatePerSec() float64
+	GetPushBurst() float64
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options

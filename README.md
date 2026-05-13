@@ -300,6 +300,51 @@ dq := delayq.New(delayq.WithLogger(delayq.NopLogger())) // 关闭日志
 
 默认输出到 stderr，前缀 `[delayq]`。
 
+## 限流
+
+```go
+dq := delayq.New(
+    delayq.WithPushRatePerSec(1000), // 每秒最多 1000 次 Push
+    delayq.WithPushBurst(2000),      // 突发桶容量 2000
+)
+
+err := dq.Push(item)
+if errors.Is(err, delayq.ErrRateLimited) {
+    // 当前过载，业务自行选择 retry/drop/log
+}
+```
+
+`PushBatch` 一次扣 N 个 token，不足时整批拒绝（不会部分入队）。
+
+## 优雅退出
+
+```go
+// 触发关闭信号后：
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+// 方式一：仅等待消化（不关闭，Drain 后还能继续 Push）
+err := dq.Drain(ctx)
+
+// 方式二：等待消化后关闭（推荐）
+err := dq.CloseGracefully(ctx)
+```
+
+Drain 期间：
+- 新 `Push` 返回 `ErrDraining`
+- 现有 item 继续被 ticker 派发与 handler 处理
+- 等到 Length=0 且 InFlight=0 才返回
+- ctx 超时返回 `ctx.Err()`，剩余 item 仍在队列中
+
+## 完整示例
+
+参见 [`examples/`](examples/) 目录：
+
+- [`memory/`](examples/memory) - 最小内存队列
+- [`redis/`](examples/redis) - 分布式 Redis 队列（基于 redisson）
+- [`manualack/`](examples/manualack) - 手动 ack/nack 异步处理
+- [`graceful/`](examples/graceful) - 优雅退出 + Prometheus
+
 ## Options 一览
 
 | Option | 默认值 | 说明 |
@@ -317,6 +362,9 @@ dq := delayq.New(delayq.WithLogger(delayq.NopLogger())) // 关闭日志
 | `WithRetryBackoff(float64)` | `1.0` | 退避系数；`>1` 启用指数退避 |
 | `WithMaxRetryInterval(d)` | `60*time.Second` | 退避上限 |
 | `WithRetryIntervalFunc(func)` | `nil` | 自定义重试间隔，优先级最高 |
+| `WithDisableValueIndex(bool)` | `false` | 禁用 byValue 索引（Get/Cancel 不可用），Push 性能 +40% |
+| `WithPushRatePerSec(float64)` | `0` | Push 限流速率（token/s），`<=0` 不限流 |
+| `WithPushBurst(float64)` | `0` | Push 限流桶容量，`<=0` 取 PushRatePerSec |
 
 ## 性能
 

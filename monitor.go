@@ -26,6 +26,8 @@ const (
 	MetricReclaim = "delayq_reclaim"
 	// MetricReclaimError reclaim 失败 (Counter)
 	MetricReclaimError = "delayq_reclaim_error"
+	// MetricRateLimited Push 被限流拒绝 (Counter)
+	MetricRateLimited = "delayq_rate_limited"
 )
 
 type statsGetter interface {

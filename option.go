@@ -40,5 +40,9 @@ func OptionsOptionDeclareWithDefault() interface{} {
 		"RetryIntervalFunc": (func(failedCount int) time.Duration)(nil),
 		// annotation@DisableValueIndex(comment="禁用 value->node 索引（内存队列）；启用后 Get/Cancel 不可用，但 Push 性能提升约 40%")
 		"DisableValueIndex": false,
+		// annotation@PushRatePerSec(comment="Push 限流（每秒允许 token 数），<=0 表示不限流")
+		"PushRatePerSec": float64(0),
+		// annotation@PushBurst(comment="Push 限流 burst 容量，<=0 时取 PushRatePerSec 同值")
+		"PushBurst": float64(0),
 	}
 }
