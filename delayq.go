@@ -29,6 +29,8 @@ var (
 	ErrTopicQueueHasRegistered = errors.New("topic queue has registered")
 	// ErrNilItem Push 时 item 为 nil
 	ErrNilItem = errors.New("item is nil")
+	// ErrValueIndexDisabled 在 DisableValueIndex=true 时调用 Get/Cancel 返回此错误
+	ErrValueIndexDisabled = errors.New("value index is disabled, Get/Cancel unavailable")
 )
 
 // Status 延迟队列汇总状态

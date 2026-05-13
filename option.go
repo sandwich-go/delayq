@@ -38,5 +38,7 @@ func OptionsOptionDeclareWithDefault() interface{} {
 		"MaxRetryInterval": 60 * time.Second,
 		// annotation@RetryIntervalFunc(comment="自定义重试间隔函数，传入失败次数（>=1），返回下次重试延迟；非 nil 时优先于 RetryInterval/Backoff")
 		"RetryIntervalFunc": (func(failedCount int) time.Duration)(nil),
+		// annotation@DisableValueIndex(comment="禁用 value->node 索引（内存队列）；启用后 Get/Cancel 不可用，但 Push 性能提升约 40%")
+		"DisableValueIndex": false,
 	}
 }

@@ -197,24 +197,4 @@ func TestMemoryQueue_CloseWaitsInflight(t *testing.T) {
 	}
 }
 
-func BenchmarkItem(b *testing.B) {
-	var wg sync.WaitGroup
-	tp := NewMemoryTopicQueue(context.Background(), "")
-	err := tp.Start(func(item *Item) error {
-		wg.Done()
-		return nil
-	})
-	if err != nil {
-		b.Fatal("queue start error", err)
-	}
-	defer tp.Close()
-	time.Sleep(10 * time.Millisecond)
-	for i := 0; i < b.N; i++ {
-		wg.Add(1)
-		err = tp.Push(&Item{DelaySecond: int64(i % 3)})
-		if err != nil {
-			b.Fatal("queue push item error", err)
-		}
-	}
-	wg.Wait()
-}
+// 老的 BenchmarkItem 已被 BenchmarkMemq_HandlerThroughput 取代

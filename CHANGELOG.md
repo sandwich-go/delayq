@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Performance (性能)
+
+- **Push 路径吞吐 51× 提升**：
+  - 同 priority 下链表头插改为 O(1)（原 O(N)）：`head.priority <= n.priority` 时直接前插
+  - 移除 wheelNode.id 字符串字段及 idSeq 计数器，少 1 次 strconv 分配
+  - `query map[string]struct{}` 改为 `count int64` 计数器，省一次 map 写
+  - benchmark：30000 ns/op → 548 ns/op（with-index），224 ns/op（no-index）
+- **`WithDisableValueIndex(bool)` Option**：禁用 byValue 索引（Get/Cancel 不可用），Push 进一步提速 ~40%。
+- **完整 benchmark 套件**：新增 `benchmark_test.go` 覆盖 Push/PushBatch/Get/Cancel/Length/Status/TickerSweep/HandlerThroughput/ManualAck/Priority 等 12 个场景。
+
 ### Added (新增)
 
 - **PushBatch**：批量推送 API，Redis 模式下通过单次 Lua 脚本原子写入。

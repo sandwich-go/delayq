@@ -318,6 +318,28 @@ dq := delayq.New(delayq.WithLogger(delayq.NopLogger())) // 关闭日志
 | `WithMaxRetryInterval(d)` | `60*time.Second` | 退避上限 |
 | `WithRetryIntervalFunc(func)` | `nil` | 自定义重试间隔，优先级最高 |
 
+## 性能
+
+在 Apple M2 Pro / Go 1.25 上的 micro-benchmark 数据（单线程）：
+
+| 操作 | ns/op | ops/s | allocs/op |
+|------|------|-------|-----------|
+| Push（默认，含 byValue 索引） | ~550 | 1.8M | 6 |
+| Push（`WithDisableValueIndex(true)`） | ~225 | 4.4M | 3 |
+| PushBatch（1000 items） | ~488 μs | 2M items/s | 6/item |
+| Get（10000 items 库） | ~68 | 14M | 1 |
+| Cancel | ~234 | 4.3M | 1 |
+| Length | ~15 | 67M | 0 |
+| 时间轮 sweep（1000 due） | ~556 μs | 1.8M items/s | 3.8/item |
+
+`WithDisableValueIndex` 在不需要 `Get`/`Cancel` 的高吞吐场景下推荐启用，可省一次 map 写入与一次 string 拷贝。
+
+跑 benchmark：
+
+```bash
+go test -bench=. -benchmem -benchtime=1s ./...
+```
+
 ## 注意事项
 
 ### Topic 路由

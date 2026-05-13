@@ -3,16 +3,13 @@ package delayq
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 const wheelSize = 3600
 
 type wheelNode struct {
-	id         string
 	cycleCount int
 	wheelIndex int
 	priority   int32
@@ -313,16 +310,13 @@ type memQueue struct {
 	*baseQueue
 	index int
 
-	// mx 保护 wheels、query、byValue、index
+	// mx 保护 wheels、count、byValue、index
 	mx     sync.Mutex
 	wheels [wheelSize]wheel
-	// query 跟踪所有在队列中的节点（id -> struct{}），用于计算 Length
-	query map[string]struct{}
-	// byValue 用于按 value 反查节点，支持 Get / Cancel
+	// count 跟踪所有在队列中的节点数（含 canceled），用于 Length
+	count int64
+	// byValue 用于按 value 反查节点，支持 Get / Cancel；DisableValueIndex=true 时为 nil
 	byValue map[string][]*wheelNode
-
-	// idSeq 为节点分配唯一 id
-	idSeq uint64
 }
 
 // NewMemoryTopicQueue 构造一个仅在内存中的延迟队列。
@@ -332,9 +326,9 @@ func NewMemoryTopicQueue(ctx context.Context, topic string, opts ...Option) Topi
 }
 
 func newMemoryTopicQueue(ctx context.Context, topic string, opts *Options) TopicQueue {
-	q := &memQueue{
-		query:   make(map[string]struct{}),
-		byValue: make(map[string][]*wheelNode),
+	q := &memQueue{}
+	if !opts.GetDisableValueIndex() {
+		q.byValue = make(map[string][]*wheelNode)
 	}
 	q.baseQueue = newBaseQueue(ctx, topic, opts)
 	q.failed = q.onFailed
@@ -387,35 +381,42 @@ func (q *memQueue) insertLocked(item *Item, delaySecond int64) {
 	cycle := int(calculateValue / wheelSize)
 	idx := int(calculateValue % wheelSize)
 
-	id := strconv.FormatUint(atomic.AddUint64(&q.idSeq, 1), 10)
 	n := &wheelNode{
-		id:         id,
 		cycleCount: cycle,
 		wheelIndex: idx,
 		priority:   item.GetPriority(),
 		item:       item,
 	}
-	// 按 priority 降序插入链表（同 priority 时新的在前）
+	// 按 priority 降序插入链表。
+	// 当 head.priority <= n.priority 时直接头插：高优先级在前；
+	// 同 priority 时新节点也插到队首（不保证 FIFO，但 push 路径 O(1)）。
 	head := q.wheels[idx].nodes
-	if head == nil || head.priority < n.priority {
+	if head == nil || head.priority <= n.priority {
 		n.next = head
 		q.wheels[idx].nodes = n
 	} else {
 		prev := head
-		for prev.next != nil && prev.next.priority >= n.priority {
+		for prev.next != nil && prev.next.priority > n.priority {
 			prev = prev.next
 		}
 		n.next = prev.next
 		prev.next = n
 	}
-	q.query[id] = struct{}{}
-	if v := string(item.GetValue()); v != "" {
-		q.byValue[v] = append(q.byValue[v], n)
+	q.count++
+	if q.byValue == nil {
+		return
+	}
+	if v := item.GetValue(); len(v) != 0 {
+		key := string(v)
+		q.byValue[key] = append(q.byValue[key], n)
 	}
 }
 
 // removeFromByValueLocked 在持锁下移除 byValue 索引中的节点
 func (q *memQueue) removeFromByValueLocked(n *wheelNode) {
+	if q.byValue == nil {
+		return
+	}
 	v := string(n.item.GetValue())
 	if v == "" {
 		return
@@ -450,7 +451,7 @@ func (q *memQueue) ticker() error {
 			if !p.canceled {
 				due = append(due, p.item)
 			}
-			delete(q.query, p.id)
+			q.count--
 			q.removeFromByValueLocked(p)
 			prev.next = p.next
 			p = p.next
@@ -482,7 +483,7 @@ func (q *memQueue) StartManualAck(f func(item *Item, ack Acker)) error {
 func (q *memQueue) Length() int64 {
 	q.mx.Lock()
 	defer q.mx.Unlock()
-	return int64(len(q.query))
+	return q.count
 }
 
 func (q *memQueue) Close() error { return q.close() }
@@ -533,9 +534,13 @@ func (q *memQueue) PushBatch(items []*Item) error {
 
 // Get 查询 value 是否存在于队列中。
 // 多个相同 value 时返回剩余延迟最小的那个。
+// DisableValueIndex=true 时返回 ErrValueIndexDisabled。
 func (q *memQueue) Get(value []byte) (remaining time.Duration, exists bool, err error) {
 	q.mx.Lock()
 	defer q.mx.Unlock()
+	if q.byValue == nil {
+		return 0, false, ErrValueIndexDisabled
+	}
 	list, ok := q.byValue[string(value)]
 	if !ok || len(list) == 0 {
 		return 0, false, nil
@@ -564,9 +569,13 @@ func (q *memQueue) Get(value []byte) (remaining time.Duration, exists bool, err 
 
 // Cancel 标记所有匹配 value 的节点为 canceled，ticker 时跳过派发并清理。
 // 返回是否至少取消了一个节点。
+// DisableValueIndex=true 时返回 ErrValueIndexDisabled。
 func (q *memQueue) Cancel(value []byte) (bool, error) {
 	q.mx.Lock()
 	defer q.mx.Unlock()
+	if q.byValue == nil {
+		return false, ErrValueIndexDisabled
+	}
 	list, ok := q.byValue[string(value)]
 	if !ok || len(list) == 0 {
 		return false, nil

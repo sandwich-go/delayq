@@ -37,6 +37,8 @@ type Options struct {
 	MaxRetryInterval time.Duration
 	// annotation@RetryIntervalFunc(comment="自定义重试间隔函数，传入失败次数（>=1），返回下次重试延迟；非 nil 时优先于 RetryInterval/Backoff")
 	RetryIntervalFunc func(failedCount int) time.Duration
+	// annotation@DisableValueIndex(comment="禁用 value->node 索引（内存队列）；启用后 Get/Cancel 不可用，但 Push 性能提升约 40%")
+	DisableValueIndex bool
 }
 
 // newConfig new Options
@@ -152,6 +154,13 @@ func WithRetryIntervalFunc(v func(failedCount int) time.Duration) Option {
 	}
 }
 
+// WithDisableValueIndex 禁用 value->node 索引（内存队列）；启用后 Get/Cancel 不可用，但 Push 性能提升约 40%
+func WithDisableValueIndex(v bool) Option {
+	return func(cc *Options) {
+		cc.DisableValueIndex = v
+	}
+}
+
 // InstallOptionsWatchDog the installed func will called when newConfig  called
 func InstallOptionsWatchDog(dog func(cc *Options)) { watchDogOptions = dog }
 
@@ -177,6 +186,7 @@ func newDefaultOptions() *Options {
 		WithRetryBackoff(1.0),
 		WithMaxRetryInterval(60 * time.Second),
 		WithRetryIntervalFunc(nil),
+		WithDisableValueIndex(false),
 	} {
 		opt(cc)
 	}
@@ -202,6 +212,7 @@ func (cc *Options) GetMaxRetryInterval() time.Duration  { return cc.MaxRetryInte
 func (cc *Options) GetRetryIntervalFunc() func(failedCount int) time.Duration {
 	return cc.RetryIntervalFunc
 }
+func (cc *Options) GetDisableValueIndex() bool { return cc.DisableValueIndex }
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
@@ -218,6 +229,7 @@ type OptionsVisitor interface {
 	GetRetryBackoff() float64
 	GetMaxRetryInterval() time.Duration
 	GetRetryIntervalFunc() func(failedCount int) time.Duration
+	GetDisableValueIndex() bool
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options
