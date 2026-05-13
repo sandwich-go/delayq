@@ -15,6 +15,21 @@ Go 语言实现的延迟队列，支持：
 go get github.com/sandwich-go/delayq
 ```
 
+## 主要功能
+
+| 功能 | API | 说明 |
+|------|-----|------|
+| 单条推送 | `Push(item)` | 普通延迟投递 |
+| 批量推送 | `PushBatch(items)` | 原子批量投递（Redis 模式下走单 Lua） |
+| 优先级 | `Item.Priority` | 同一执行时间点高优先级先派发 |
+| 查询 | `Get(topic, value)` | 返回是否存在与剩余延迟 |
+| 取消 | `Cancel(topic, value)` | 移除未派发的 item |
+| 自动 ack | `Start(topic, handler)` | handler 返回 error 自动 ack/nack |
+| 手动 ack | `StartManualAck(topic, handler)` | 业务显式调用 `Acker.Ack/Nack` |
+| 重试退避 | `WithRetryBackoff` 等 | 固定/指数/自定义函数 |
+| 死信 | `WithOnDeadLetter` | 重试耗尽回调 |
+| 监控 | `WithMonitorCounter` + Prometheus Collector | 双通道指标 |
+
 ## 快速开始
 
 ```go
@@ -138,6 +153,60 @@ dq := delayq.New(
 ```
 
 > **不要**把 VisibilityTimeout 设得比业务 handler 最大耗时还短，否则会导致重复处理。
+
+## 批量推送 / 查询 / 取消
+
+```go
+// 批量
+dq.PushBatch([]*delayq.Item{
+    {Topic: "orders", DelaySecond: 30, Value: []byte("o1")},
+    {Topic: "orders", DelaySecond: 30, Value: []byte("o2")},
+})
+
+// 查询
+remaining, exists, err := dq.Get("orders", []byte("o1"))
+if exists {
+    fmt.Printf("将在 %v 后执行\n", remaining)
+}
+
+// 取消（已开始执行的 handler 无法终止）
+canceled, err := dq.Cancel("orders", []byte("o1"))
+```
+
+## 优先级
+
+`Item.Priority` 在**同一执行时间点**生效，越大越先执行：
+
+```go
+dq.PushBatch([]*delayq.Item{
+    {Topic: "t", DelaySecond: 1, Value: []byte("low"),  Priority: 1},
+    {Topic: "t", DelaySecond: 1, Value: []byte("high"), Priority: 100},
+    {Topic: "t", DelaySecond: 1, Value: []byte("mid"),  Priority: 50},
+})
+// 派发顺序：high → mid → low
+```
+
+> Priority 在 Redis 中通过 ZSET score 的微秒级偏移编码（`score = ts - priority * 1e-6`），不会跨秒错位。
+
+## 手动 Ack/Nack
+
+适合异步处理场景，handler 立即返回，由后台业务线程在合适时机 ack：
+
+```go
+dq.StartManualAck("orders", func(item *delayq.Item, ack delayq.Acker) {
+    go func() {
+        if err := processAsync(item); err != nil {
+            ack.Nack(err)  // 触发重试或死信
+            return
+        }
+        ack.Ack()         // 标记成功，从 doing 集移除
+    }()
+})
+```
+
+注意：
+- 业务必须保证最终调用 `Ack` 或 `Nack`，否则该 item 会留在 doing 集直到 `VisibilityTimeout` 触发 reclaim 重新派发。
+- 多次 Ack/Nack 是 no-op，安全。
 
 ## 重试策略
 

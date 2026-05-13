@@ -58,7 +58,7 @@ func TestRedisQueue_OnFailed_UsesRetryDelay(t *testing.T) {
 	var capturedScore int64
 	var captured int32
 	b.scripts[idxAckFailed].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
-		atomic.StoreInt64(&capturedScore, args[1].(int64))
+		atomic.StoreInt64(&capturedScore, int64(parseFloat64(args[1])))
 		atomic.AddInt32(&captured, 1)
 		return []interface{}{int64(1)}, nil
 	}
@@ -93,7 +93,7 @@ func TestRedisQueue_OnFailed_BackoffByFailedCount(t *testing.T) {
 	}
 	captures := make(chan capture, 4)
 	b.scripts[idxAckFailed].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
-		captures <- capture{score: args[1].(int64)}
+		captures <- capture{score: int64(parseFloat64(args[1]))}
 		return []interface{}{int64(1)}, nil
 	}
 
@@ -184,7 +184,7 @@ func TestRedisQueue_PushWithDelay_ScoreFuture(t *testing.T) {
 
 	var capturedScore int64
 	b.scripts[idxAdd].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
-		atomic.StoreInt64(&capturedScore, args[1].(int64))
+		atomic.StoreInt64(&capturedScore, int64(parseFloat64(args[1])))
 		return []interface{}{true}, nil
 	}
 
@@ -209,7 +209,7 @@ func TestRedisQueue_PushNegativeDelay_TreatedAsZero(t *testing.T) {
 
 	var capturedScore int64
 	b.scripts[idxAdd].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
-		atomic.StoreInt64(&capturedScore, args[1].(int64))
+		atomic.StoreInt64(&capturedScore, int64(parseFloat64(args[1])))
 		return []interface{}{true}, nil
 	}
 

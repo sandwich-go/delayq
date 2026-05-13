@@ -15,6 +15,8 @@ type wheelNode struct {
 	id         string
 	cycleCount int
 	wheelIndex int
+	priority   int32
+	canceled   bool // Cancel 标记，ticker 时跳过
 	item       *Item
 	next       *wheelNode
 }
@@ -38,13 +40,14 @@ func (s safeHandleItemFunc) call(item *Item) error {
 }
 
 type baseQueue struct {
-	ctx     context.Context
-	topic   string
-	opts    *Options
-	log     Logger
-	handle  safeHandleItemFunc
-	failed  safeHandleItemFunc
-	success safeHandleItemFunc
+	ctx           context.Context
+	topic         string
+	opts          *Options
+	log           Logger
+	handle        safeHandleItemFunc
+	failed        safeHandleItemFunc
+	success       safeHandleItemFunc
+	manualHandler func(*Item, Acker) // 非 nil 时启用手动 ack 模式
 
 	// wg 用于 ticker goroutine 的等待
 	wg sync.WaitGroup
@@ -134,6 +137,21 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 			q.log.Errorf("topic=%s ack callback panic: %v item=%v", q.topic, r, item)
 		}
 	}()
+	// manual ack 模式：派发给用户回调 + Acker，由用户决定何时 ack
+	if q.manualHandler != nil {
+		acker := &itemAcker{q: q, item: item}
+		// 用户回调本身的 panic 也要捕获，并视为 Nack
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					q.log.Errorf("topic=%s manual handler panic: %v", q.topic, r)
+					acker.Nack(fmt.Errorf("handler panic: %v", r))
+				}
+			}()
+			q.manualHandler(item, acker)
+		}()
+		return
+	}
 	err := q.executeOne(item)
 	if err != nil {
 		if ferr := q.failed.call(item); ferr != nil {
@@ -275,21 +293,29 @@ type memQueue struct {
 	*baseQueue
 	index int
 
-	// mx 保护 wheels、query、index
+	// mx 保护 wheels、query、byValue、index
 	mx     sync.Mutex
 	wheels [wheelSize]wheel
-	query  map[string]struct{}
+	// query 跟踪所有在队列中的节点（id -> struct{}），用于计算 Length
+	query map[string]struct{}
+	// byValue 用于按 value 反查节点，支持 Get / Cancel
+	byValue map[string][]*wheelNode
 
 	// idSeq 为节点分配唯一 id
 	idSeq uint64
 }
 
+// NewMemoryTopicQueue 构造一个仅在内存中的延迟队列。
+// 时间轮粒度为 1 秒，最大延迟受 wheelSize（3600 秒）* cycle 约束（无硬上限）。
 func NewMemoryTopicQueue(ctx context.Context, topic string, opts ...Option) TopicQueue {
 	return newMemoryTopicQueue(ctx, topic, newConfig(opts...))
 }
 
 func newMemoryTopicQueue(ctx context.Context, topic string, opts *Options) TopicQueue {
-	q := &memQueue{query: make(map[string]struct{})}
+	q := &memQueue{
+		query:   make(map[string]struct{}),
+		byValue: make(map[string][]*wheelNode),
+	}
 	q.baseQueue = newBaseQueue(ctx, topic, opts)
 	q.failed = q.onFailed
 	return q
@@ -331,7 +357,12 @@ func (q *memQueue) pushRetry(item *Item, delaySecond int64) error {
 	}
 	q.mx.Lock()
 	defer q.mx.Unlock()
+	q.insertLocked(item, delaySecond)
+	return nil
+}
 
+// insertLocked 在持锁状态下把 item 插入到对应槽位，按 priority 降序保持链表有序
+func (q *memQueue) insertLocked(item *Item, delaySecond int64) {
 	calculateValue := int64(q.index) + delaySecond
 	cycle := int(calculateValue / wheelSize)
 	idx := int(calculateValue % wheelSize)
@@ -341,12 +372,46 @@ func (q *memQueue) pushRetry(item *Item, delaySecond int64) error {
 		id:         id,
 		cycleCount: cycle,
 		wheelIndex: idx,
+		priority:   item.GetPriority(),
 		item:       item,
-		next:       q.wheels[idx].nodes,
 	}
-	q.wheels[idx].nodes = n
+	// 按 priority 降序插入链表（同 priority 时新的在前）
+	head := q.wheels[idx].nodes
+	if head == nil || head.priority < n.priority {
+		n.next = head
+		q.wheels[idx].nodes = n
+	} else {
+		prev := head
+		for prev.next != nil && prev.next.priority >= n.priority {
+			prev = prev.next
+		}
+		n.next = prev.next
+		prev.next = n
+	}
 	q.query[id] = struct{}{}
-	return nil
+	if v := string(item.GetValue()); v != "" {
+		q.byValue[v] = append(q.byValue[v], n)
+	}
+}
+
+// removeFromByValueLocked 在持锁下移除 byValue 索引中的节点
+func (q *memQueue) removeFromByValueLocked(n *wheelNode) {
+	v := string(n.item.GetValue())
+	if v == "" {
+		return
+	}
+	list := q.byValue[v]
+	for i, p := range list {
+		if p == n {
+			list = append(list[:i], list[i+1:]...)
+			break
+		}
+	}
+	if len(list) == 0 {
+		delete(q.byValue, v)
+	} else {
+		q.byValue[v] = list
+	}
 }
 
 // ticker 时间轮推进：检出当前槽位所有到期节点，批量派发给 execute
@@ -362,8 +427,11 @@ func (q *memQueue) ticker() error {
 	for p := dummy.next; p != nil; {
 		if p.cycleCount == 0 {
 			// 取出并从链表中摘除
-			due = append(due, p.item)
+			if !p.canceled {
+				due = append(due, p.item)
+			}
 			delete(q.query, p.id)
+			q.removeFromByValueLocked(p)
 			prev.next = p.next
 			p = p.next
 		} else {
@@ -385,6 +453,12 @@ func (q *memQueue) Start(f func(item *Item) error) error {
 	return q.start(f, ticker{d: 1 * time.Second, f: q.ticker})
 }
 
+// StartManualAck 启动手动 ack 模式
+func (q *memQueue) StartManualAck(f func(item *Item, ack Acker)) error {
+	q.manualHandler = f
+	return q.start(func(*Item) error { return nil }, ticker{d: 1 * time.Second, f: q.ticker})
+}
+
 func (q *memQueue) Length() int64 {
 	q.mx.Lock()
 	defer q.mx.Unlock()
@@ -393,6 +467,7 @@ func (q *memQueue) Length() int64 {
 
 func (q *memQueue) Close() error { return q.close() }
 
+// Push 把 item 插入时间轮。同槽位中按 Priority 降序排列。
 func (q *memQueue) Push(item *Item) error {
 	if q.isClosed() {
 		return ErrTopicQueueHasClosed
@@ -404,23 +479,84 @@ func (q *memQueue) Push(item *Item) error {
 	if delaySecond < 0 {
 		delaySecond = 0
 	}
-
 	q.mx.Lock()
 	defer q.mx.Unlock()
-
-	calculateValue := int64(q.index) + delaySecond
-	cycle := int(calculateValue / wheelSize)
-	idx := int(calculateValue % wheelSize)
-
-	id := strconv.FormatUint(atomic.AddUint64(&q.idSeq, 1), 10)
-	n := &wheelNode{
-		id:         id,
-		cycleCount: cycle,
-		wheelIndex: idx,
-		item:       item,
-		next:       q.wheels[idx].nodes,
-	}
-	q.wheels[idx].nodes = n
-	q.query[id] = struct{}{}
+	q.insertLocked(item, delaySecond)
 	return nil
+}
+
+// PushBatch 批量推送多个 item（持锁一次性插入全部）。
+// 任何一个 item 校验失败都会终止批次（已入队的不会回滚）。
+func (q *memQueue) PushBatch(items []*Item) error {
+	if len(items) == 0 {
+		return nil
+	}
+	if q.isClosed() {
+		return ErrTopicQueueHasClosed
+	}
+	for _, it := range items {
+		if err := q.prepareItem(it); err != nil {
+			return err
+		}
+	}
+	q.mx.Lock()
+	defer q.mx.Unlock()
+	for _, it := range items {
+		delaySecond := it.GetDelaySecond()
+		if delaySecond < 0 {
+			delaySecond = 0
+		}
+		q.insertLocked(it, delaySecond)
+	}
+	return nil
+}
+
+// Get 查询 value 是否存在于队列中。
+// 多个相同 value 时返回剩余延迟最小的那个。
+func (q *memQueue) Get(value []byte) (remaining time.Duration, exists bool, err error) {
+	q.mx.Lock()
+	defer q.mx.Unlock()
+	list, ok := q.byValue[string(value)]
+	if !ok || len(list) == 0 {
+		return 0, false, nil
+	}
+	// 找到剩余延迟最小的节点
+	minRemain := -1
+	for _, n := range list {
+		if n.canceled {
+			continue
+		}
+		// remaining = (cycleCount * wheelSize + 距离 head 的偏移)
+		offset := n.wheelIndex - q.index
+		if offset < 0 {
+			offset += wheelSize
+		}
+		remain := n.cycleCount*wheelSize + offset
+		if minRemain < 0 || remain < minRemain {
+			minRemain = remain
+		}
+	}
+	if minRemain < 0 {
+		return 0, false, nil
+	}
+	return time.Duration(minRemain) * time.Second, true, nil
+}
+
+// Cancel 标记所有匹配 value 的节点为 canceled，ticker 时跳过派发并清理。
+// 返回是否至少取消了一个节点。
+func (q *memQueue) Cancel(value []byte) (bool, error) {
+	q.mx.Lock()
+	defer q.mx.Unlock()
+	list, ok := q.byValue[string(value)]
+	if !ok || len(list) == 0 {
+		return false, nil
+	}
+	canceled := false
+	for _, n := range list {
+		if !n.canceled {
+			n.canceled = true
+			canceled = true
+		}
+	}
+	return canceled, nil
 }

@@ -31,11 +31,14 @@ local l2 = redis.call('ZCARD', doing_set)
 return {l1, l2}
 `
 
-// addLua 把 value 添加到 delay 集，score 表示该 item 的预期执行时间戳
+// addLua 把若干 (value, score) 对添加到 delay 集。
+// ARGV: value1, score1, value2, score2, ...
 var addLua = `
 local delay_set  = KEYS[1]
-local value, score = ARGV[1], ARGV[2]
-redis.call('ZADD', delay_set, score or 0.0, value)
+for i = 1, #ARGV, 2 do
+	local v, s = ARGV[i], ARGV[i+1]
+	redis.call('ZADD', delay_set, s, v)
+end
 return {true}
 `
 
@@ -74,6 +77,29 @@ end
 return out
 `
 
+// getLua 查询 value 在 delay/doing 集中的状态与 score。
+// 返回 {state, score} state: 0=不存在 1=delay 2=doing
+var getLua = `
+local delay_set, doing_set = KEYS[1], KEYS[2]
+local value = ARGV[1]
+local s1 = redis.call('ZSCORE', delay_set, value)
+if s1 then return {1, s1} end
+local s2 = redis.call('ZSCORE', doing_set, value)
+if s2 then return {2, s2} end
+return {0, 0}
+`
+
+// cancelLua 从 delay/doing/failed 三处删除 value，返回删除数量
+var cancelLua = `
+local delay_set, doing_set, failed_hash = KEYS[1], KEYS[2], KEYS[3]
+local value = ARGV[1]
+local n = 0
+n = n + redis.call('ZREM', delay_set, value)
+n = n + redis.call('ZREM', doing_set, value)
+redis.call('HDEL', failed_hash, value)
+return {n}
+`
+
 // RedisScript redis 脚本
 type RedisScript interface {
 	EvalSha(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error)
@@ -83,6 +109,25 @@ type RedisScript interface {
 // RedisScriptBuilder redis 脚本工厂，可以通过 src load
 type RedisScriptBuilder interface {
 	Build(src string) RedisScript
+}
+
+// priorityScale 优先级在 score 中占的最大权重（秒级）。
+// score = execTimestamp - priority * priorityScale；priorityScale=1e-6 表示 priority 在 microsecond
+// 级别影响排序，不会跨秒错位（10^9 时间戳 + 10^-6 weight 仍在 double 精度内）。
+const priorityScale = 1e-6
+
+// itemScore 计算 item 的 ZSET score
+func itemScore(execTs int64, priority int32) float64 {
+	return float64(execTs) - float64(priority)*priorityScale
+}
+
+// scoreToExecTs 从 score 还原原始执行时间戳（向上取整避免边界 off-by-one）
+func scoreToExecTs(score float64) int64 {
+	// score 可能为浮点，结果四舍五入到秒
+	if score >= 0 {
+		return int64(score + 0.5)
+	}
+	return int64(score - 0.5)
 }
 
 type redisQueue struct {
@@ -98,8 +143,12 @@ type redisQueue struct {
 	ackSuccessScript  RedisScript
 	ackFailedScript   RedisScript
 	failedCountScript RedisScript
+	getScript         RedisScript
+	cancelScript      RedisScript
 }
 
+// NewRedisTopicQueue 构造一个使用 Redis 作为后端的 TopicQueue。
+// 必须通过 WithRedisScriptBuilder 注入 Redis 客户端适配器，否则会 panic。
 func NewRedisTopicQueue(ctx context.Context, topic string, opts ...Option) TopicQueue {
 	return newRedisTopicQueue(ctx, topic, newConfig(opts...))
 }
@@ -116,6 +165,8 @@ func newRedisTopicQueue(ctx context.Context, topic string, opts *Options) TopicQ
 		ackSuccessScript:  builder.Build(ackSuccessLua),
 		ackFailedScript:   builder.Build(ackFailedLua),
 		failedCountScript: builder.Build(failedCountLua),
+		getScript:         builder.Build(getLua),
+		cancelScript:      builder.Build(cancelLua),
 	}
 	if prefix := opts.GetPrefix(); len(prefix) > 0 {
 		q.delaySetKey = fmt.Sprintf("%s:%s", prefix, q.delaySetKey)
@@ -136,16 +187,38 @@ func (q *redisQueue) opCtx() context.Context {
 	return context.Background()
 }
 
-// Push 将 item 加入延迟队列，DelaySecond 为相对秒数
+// Push 将 item 加入延迟队列，DelaySecond 为相对秒数；item.Priority 用于同时间内排序
 func (q *redisQueue) Push(item *Item) error {
 	if err := q.prepareItem(item); err != nil {
 		return err
 	}
-	score := unix() + item.GetDelaySecond()
-	if item.GetDelaySecond() < 0 {
-		score = unix()
+	delay := item.GetDelaySecond()
+	if delay < 0 {
+		delay = 0
 	}
+	score := itemScore(unix()+delay, item.GetPriority())
 	_, err := q.runScript(q.opCtx(), q.addScript, []string{q.delaySetKey}, item.GetValue(), score)
+	return err
+}
+
+// PushBatch 批量推送，原子地通过单个 Lua 脚本完成所有 ZADD
+func (q *redisQueue) PushBatch(items []*Item) error {
+	if len(items) == 0 {
+		return nil
+	}
+	args := make([]interface{}, 0, len(items)*2)
+	now := unix()
+	for _, it := range items {
+		if err := q.prepareItem(it); err != nil {
+			return err
+		}
+		delay := it.GetDelaySecond()
+		if delay < 0 {
+			delay = 0
+		}
+		args = append(args, it.GetValue(), itemScore(now+delay, it.GetPriority()))
+	}
+	_, err := q.runScript(q.opCtx(), q.addScript, []string{q.delaySetKey}, args...)
 	return err
 }
 
@@ -163,10 +236,57 @@ func (q *redisQueue) Length() int64 {
 	return v
 }
 
+// Get 查询 value 是否存在于队列中（delay 或 doing），返回剩余延迟（doing 中返回 0）
+func (q *redisQueue) Get(value []byte) (remaining time.Duration, exists bool, err error) {
+	res, err := q.runScript(q.opCtx(), q.getScript, []string{q.delaySetKey, q.doingSetKey}, value)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(res) < 2 {
+		return 0, false, nil
+	}
+	state := parseInt64(res[0])
+	if state == 0 {
+		return 0, false, nil
+	}
+	score := parseFloat64(res[1])
+	if state == 2 {
+		return 0, true, nil
+	}
+	execTs := scoreToExecTs(score)
+	now := unix()
+	if execTs <= now {
+		return 0, true, nil
+	}
+	return time.Duration(execTs-now) * time.Second, true, nil
+}
+
+// Cancel 从 delay/doing 集与 failed Hash 中移除 value，返回是否移除成功
+func (q *redisQueue) Cancel(value []byte) (bool, error) {
+	res, err := q.runScript(q.opCtx(), q.cancelScript,
+		[]string{q.delaySetKey, q.doingSetKey, q.failedHashKey},
+		value)
+	if err != nil {
+		return false, err
+	}
+	if len(res) == 0 {
+		return false, nil
+	}
+	return parseInt64(res[0]) > 0, nil
+}
+
 func (q *redisQueue) Close() error { return q.close() }
 
 func (q *redisQueue) Start(f func(item *Item) error) error {
 	return q.start(f, ticker{d: 1 * time.Second, f: q.poll}, ticker{d: 1 * time.Second, f: q.reclaim})
+}
+
+// StartManualAck 启动手动 ack 模式
+func (q *redisQueue) StartManualAck(f func(item *Item, ack Acker)) error {
+	q.manualHandler = f
+	return q.start(func(*Item) error { return nil },
+		ticker{d: 1 * time.Second, f: q.poll},
+		ticker{d: 1 * time.Second, f: q.reclaim})
 }
 
 func (q *redisQueue) runScript(ctx context.Context, s RedisScript, keys []string, args ...interface{}) ([]interface{}, error) {
@@ -272,7 +392,7 @@ func (q *redisQueue) onFailed(item *Item) error {
 	if delaySec < 0 {
 		delaySec = 0
 	}
-	nextScore := unix() + delaySec
+	nextScore := itemScore(unix()+delaySec, item.GetPriority())
 	_, err := q.runScript(q.opCtx(), q.ackFailedScript,
 		[]string{q.delaySetKey, q.doingSetKey, q.failedHashKey},
 		item.GetValue(), nextScore)
@@ -297,6 +417,22 @@ func parseInt64(v interface{}) int64 {
 	case string:
 		n, _ := strconv.ParseInt(x, 10, 64)
 		return n
+	}
+	return 0
+}
+
+// parseFloat64 兼容 Redis 返回的多种数字类型
+func parseFloat64(v interface{}) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int64:
+		return float64(x)
+	case int:
+		return float64(x)
+	case string:
+		f, _ := strconv.ParseFloat(x, 64)
+		return f
 	}
 	return 0
 }

@@ -8,8 +8,10 @@ option go_package = "github.com/sandwich-go/delayq;delayq";
 message Item {
   // 主题
   string topic = 1;
-  // 延迟秒数（相对当前时间）
+  // 延迟秒数（相对当前时间）；与 ExecuteAt 二者择一，DelaySecond 优先级更高
   int64 delay_second = 2;
-  // 业务自定义负载
+  // 业务自定义负载，建议 <=1KB；Redis 模式下不可重复
   bytes value = 3;
+  // 优先级（仅在同一执行时间点生效，越大越先执行）；默认 0
+  int32 priority = 4;
 }

@@ -6,6 +6,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// OptionsOptionDeclareWithDefault 由 optiongen 工具读取以生成 Option 函数。
+// 普通调用方不应直接使用此函数。
+//
 //go:generate optionGen  --new_func=newConfig --option_return_previous=false
 func OptionsOptionDeclareWithDefault() interface{} {
 	return map[string]interface{}{
