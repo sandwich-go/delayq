@@ -53,8 +53,11 @@ type baseQueue struct {
 	execWG sync.WaitGroup
 	// sem worker pool 信号量，nil 表示不限制
 	sem chan struct{}
-	// inFlight 当前正在执行 handler 的 goroutine 数
+	// inFlight 当前正在执行 handler 的 goroutine 数（不含等待 sem 的）
 	inFlight atomicInt64
+	// pendingExec ticker 已检出但 execute 尚未启动 goroutine 的 item 数；
+	// 用于 Drain 判定"全部消化"语义，避免 (count=0, inFlight=0) 的瞬时窗口
+	pendingExec atomicInt64
 
 	exitC     chan struct{}
 	closeOnce sync.Once
@@ -96,6 +99,11 @@ const largeValueWarnThreshold = 4 * 1024
 
 // drain 进入 drain 状态，拒绝新 Push 并等待所有 item 消化完毕。
 // 由 TopicQueue 的 Drain 方法调用，需要 lengthFn 提供该队列的 Length 实现。
+//
+// 等待条件：lengthFn()==0 && pendingExec==0 && inFlight==0
+//   - lengthFn  : 仍在 delay 集（内存：wheel）/doing 集中等待派发的 item
+//   - pendingExec: ticker 已检出但 execute 尚未给 inFlight +1 的 item
+//   - inFlight  : 已进入 handler 的 item
 func (q *baseQueue) drain(ctx context.Context, lengthFn func() int64) error {
 	if q.isClosed() {
 		return ErrTopicQueueHasClosed
@@ -103,11 +111,10 @@ func (q *baseQueue) drain(ctx context.Context, lengthFn func() int64) error {
 	q.draining.Set(1)
 	defer q.draining.Set(0)
 
-	// 轮询直到 Length 为 0 且 inFlight 为 0
 	t := time.NewTicker(50 * time.Millisecond)
 	defer t.Stop()
 	for {
-		if lengthFn() == 0 && q.inFlight.Get() == 0 {
+		if lengthFn() == 0 && q.pendingExec.Get() == 0 && q.inFlight.Get() == 0 {
 			return nil
 		}
 		select {
@@ -238,35 +245,58 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 	}
 }
 
-// execute 异步处理 items；受 MaxConcurrency 信号量约束，并通过 execWG 与 Close 同步
+// execute 异步处理 items；受 MaxConcurrency 信号量约束，通过 execWG 与 Close 同步。
 //
 // 调度顺序：
 //  1. 检查队列是否关闭，若关闭直接返回（剩余 items 丢弃）
 //  2. 阻塞式获取信号量；若期间感知到关闭（exitC / ctx.Done）则退出
-//  3. 信号量获取成功后再 execWG.Add(1)，保证 wg 严格成对
+//  3. 信号量获取成功后 execWG.Add(1) + inFlight.Add(1)，保证 wg 严格成对
 //  4. 子 goroutine 内 defer 释放信号量并 Done
 func (q *baseQueue) execute(items ...*Item) {
+	q.executeInternal(items, false)
+}
+
+// executeWithPending 与 execute 相同，但调用前 pendingExec 已被预加 +len(items)。
+// 适用于 ticker 路径：避免 ticker 检出 item 后到子 goroutine 增加 inFlight 之间
+// 出现 (Length=0, inFlight=0, pendingExec=0) 的瞬时窗口导致 Drain 早退。
+func (q *baseQueue) executeWithPending(items ...*Item) {
+	q.executeInternal(items, true)
+}
+
+func (q *baseQueue) executeInternal(items []*Item, hasPending bool) {
 	if len(items) == 0 {
 		return
 	}
 	useSem := q.sem != nil
-	for _, item := range items {
+	for i, item := range items {
 		if q.isClosed() {
+			if hasPending {
+				q.pendingExec.Add(-int64(len(items) - i))
+			}
 			return
 		}
 		if useSem {
 			select {
 			case q.sem <- struct{}{}:
 			case <-q.exitC:
+				if hasPending {
+					q.pendingExec.Add(-int64(len(items) - i))
+				}
 				return
 			case <-q.ctx.Done():
+				if hasPending {
+					q.pendingExec.Add(-int64(len(items) - i))
+				}
 				return
 			}
 		}
 		q.execWG.Add(1)
-		// 同步增加 inFlight，避免 Drain 在派发线程退出锁后到子 goroutine 启动前
-		// 错误地观察到 inFlight=0
+		// 同步增加 inFlight，避免子 goroutine 启动前被观察到 inFlight=0
 		q.inFlight.Add(1)
+		if hasPending {
+			// item 已成功登记到 inFlight，可以从 pending 中移除
+			q.pendingExec.Add(-1)
+		}
 		j := item
 		go func() {
 			defer q.execWG.Done()
@@ -522,10 +552,15 @@ func (q *memQueue) ticker() error {
 		}
 	}
 	q.wheels[headIndex].nodes = dummy.next
+	// 在持锁期间预加 pendingExec，避免 unlock → execute 之间出现
+	// (count=0, inFlight=0, pendingExec=0) 的瞬时窗口导致 Drain 早退
+	if n := len(due); n > 0 {
+		q.pendingExec.Add(int64(n))
+	}
 	q.mx.Unlock()
 
 	if len(due) > 0 {
-		q.execute(due...)
+		q.executeWithPending(due...)
 	}
 	return nil
 }
