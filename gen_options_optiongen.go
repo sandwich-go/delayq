@@ -4,6 +4,8 @@
 package delayq
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -25,6 +27,16 @@ type Options struct {
 	Logger Logger
 	// annotation@MaxConcurrency(comment="单 topic 业务处理最大并发 goroutine 数，<=0 表示不限制")
 	MaxConcurrency int
+	// annotation@VisibilityTimeout(comment="Redis 队列：item 被 poll 拉走后多久未 ack 视为失败被 reclaim")
+	VisibilityTimeout time.Duration
+	// annotation@RetryInterval(comment="基础重试间隔；下次重试时间 = now + RetryInterval * RetryBackoff^failedCount，且不超过 MaxRetryInterval")
+	RetryInterval time.Duration
+	// annotation@RetryBackoff(comment="重试退避系数，<=1 表示不退避（固定间隔）")
+	RetryBackoff float64
+	// annotation@MaxRetryInterval(comment="重试间隔上限")
+	MaxRetryInterval time.Duration
+	// annotation@RetryIntervalFunc(comment="自定义重试间隔函数，传入失败次数（>=1），返回下次重试延迟；非 nil 时优先于 RetryInterval/Backoff")
+	RetryIntervalFunc func(failedCount int) time.Duration
 }
 
 // newConfig new Options
@@ -105,6 +117,41 @@ func WithMaxConcurrency(v int) Option {
 	}
 }
 
+// WithVisibilityTimeout Redis 队列：item 被 poll 拉走后多久未 ack 视为失败被 reclaim
+func WithVisibilityTimeout(v time.Duration) Option {
+	return func(cc *Options) {
+		cc.VisibilityTimeout = v
+	}
+}
+
+// WithRetryInterval 基础重试间隔
+func WithRetryInterval(v time.Duration) Option {
+	return func(cc *Options) {
+		cc.RetryInterval = v
+	}
+}
+
+// WithRetryBackoff 重试退避系数，<=1 表示不退避（固定间隔）
+func WithRetryBackoff(v float64) Option {
+	return func(cc *Options) {
+		cc.RetryBackoff = v
+	}
+}
+
+// WithMaxRetryInterval 重试间隔上限
+func WithMaxRetryInterval(v time.Duration) Option {
+	return func(cc *Options) {
+		cc.MaxRetryInterval = v
+	}
+}
+
+// WithRetryIntervalFunc 自定义重试间隔函数，传入失败次数（>=1），返回下次重试延迟；非 nil 时优先于 RetryInterval/Backoff
+func WithRetryIntervalFunc(v func(failedCount int) time.Duration) Option {
+	return func(cc *Options) {
+		cc.RetryIntervalFunc = v
+	}
+}
+
 // InstallOptionsWatchDog the installed func will called when newConfig  called
 func InstallOptionsWatchDog(dog func(cc *Options)) { watchDogOptions = dog }
 
@@ -125,6 +172,11 @@ func newDefaultOptions() *Options {
 		}),
 		WithLogger(nil),
 		WithMaxConcurrency(256),
+		WithVisibilityTimeout(10 * time.Minute),
+		WithRetryInterval(1 * time.Second),
+		WithRetryBackoff(1.0),
+		WithMaxRetryInterval(60 * time.Second),
+		WithRetryIntervalFunc(nil),
 	} {
 		opt(cc)
 	}
@@ -141,8 +193,15 @@ func (cc *Options) GetOnDeadLetter() func(item *Item)         { return cc.OnDead
 func (cc *Options) GetMonitorCounter() func(metric string, value int64, labels prometheus.Labels) {
 	return cc.MonitorCounter
 }
-func (cc *Options) GetLogger() Logger      { return cc.Logger }
-func (cc *Options) GetMaxConcurrency() int { return cc.MaxConcurrency }
+func (cc *Options) GetLogger() Logger                                   { return cc.Logger }
+func (cc *Options) GetMaxConcurrency() int                              { return cc.MaxConcurrency }
+func (cc *Options) GetVisibilityTimeout() time.Duration                 { return cc.VisibilityTimeout }
+func (cc *Options) GetRetryInterval() time.Duration                     { return cc.RetryInterval }
+func (cc *Options) GetRetryBackoff() float64                            { return cc.RetryBackoff }
+func (cc *Options) GetMaxRetryInterval() time.Duration                  { return cc.MaxRetryInterval }
+func (cc *Options) GetRetryIntervalFunc() func(failedCount int) time.Duration {
+	return cc.RetryIntervalFunc
+}
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
@@ -154,6 +213,11 @@ type OptionsVisitor interface {
 	GetMonitorCounter() func(metric string, value int64, labels prometheus.Labels)
 	GetLogger() Logger
 	GetMaxConcurrency() int
+	GetVisibilityTimeout() time.Duration
+	GetRetryInterval() time.Duration
+	GetRetryBackoff() float64
+	GetMaxRetryInterval() time.Duration
+	GetRetryIntervalFunc() func(failedCount int) time.Duration
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options

@@ -1,0 +1,32 @@
+# Binaries / Compile artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Coverage reports
+coverage.out
+*.cover
+*.coverprofile
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go workspace / vendor
+/vendor/
+go.work
+go.work.sum
+
+# Logs
+*.log

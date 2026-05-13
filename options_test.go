@@ -2,6 +2,7 @@ package delayq
 
 import (
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -32,6 +33,21 @@ func TestOptions_Defaults(t *testing.T) {
 	if opts.GetLogger() != nil {
 		t.Fatalf("default logger should be nil (injected by baseQueue)")
 	}
+	if opts.GetVisibilityTimeout() != 10*time.Minute {
+		t.Fatalf("default visibility timeout wrong: %v", opts.GetVisibilityTimeout())
+	}
+	if opts.GetRetryInterval() != time.Second {
+		t.Fatalf("default retry interval wrong: %v", opts.GetRetryInterval())
+	}
+	if opts.GetRetryBackoff() != 1.0 {
+		t.Fatalf("default backoff wrong: %v", opts.GetRetryBackoff())
+	}
+	if opts.GetMaxRetryInterval() != 60*time.Second {
+		t.Fatalf("default max retry interval wrong: %v", opts.GetMaxRetryInterval())
+	}
+	if opts.GetRetryIntervalFunc() != nil {
+		t.Fatalf("default retry interval func should be nil")
+	}
 }
 
 func TestOptions_Apply(t *testing.T) {
@@ -43,6 +59,11 @@ func TestOptions_Apply(t *testing.T) {
 		WithOnDeadLetter(func(i *Item) {}),
 		WithMonitorCounter(func(m string, v int64, l prometheus.Labels) {}),
 		WithLogger(NopLogger()),
+		WithVisibilityTimeout(2*time.Minute),
+		WithRetryInterval(500*time.Millisecond),
+		WithRetryBackoff(2.5),
+		WithMaxRetryInterval(2*time.Minute),
+		WithRetryIntervalFunc(func(int) time.Duration { return 0 }),
 	)
 	if opts.GetName() != "n" || opts.GetPrefix() != "p" || opts.GetRetryTimes() != 3 ||
 		opts.GetMaxConcurrency() != 16 {
@@ -50,6 +71,21 @@ func TestOptions_Apply(t *testing.T) {
 	}
 	if opts.GetOnDeadLetter() == nil || opts.GetMonitorCounter() == nil || opts.GetLogger() == nil {
 		t.Fatal("callbacks/logger not set")
+	}
+	if opts.GetVisibilityTimeout() != 2*time.Minute {
+		t.Fatalf("visibility timeout not applied: %v", opts.GetVisibilityTimeout())
+	}
+	if opts.GetRetryInterval() != 500*time.Millisecond {
+		t.Fatalf("retry interval not applied: %v", opts.GetRetryInterval())
+	}
+	if opts.GetRetryBackoff() != 2.5 {
+		t.Fatalf("retry backoff not applied: %v", opts.GetRetryBackoff())
+	}
+	if opts.GetMaxRetryInterval() != 2*time.Minute {
+		t.Fatalf("max retry interval not applied: %v", opts.GetMaxRetryInterval())
+	}
+	if opts.GetRetryIntervalFunc() == nil {
+		t.Fatalf("retry interval func not applied")
 	}
 
 	// ApplyOption 后续再覆盖

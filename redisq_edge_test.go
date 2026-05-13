@@ -182,7 +182,28 @@ func TestRedisQueue_Poll_MalformedResponse(t *testing.T) {
 	}
 }
 
-// TestRedisQueue_Poll_DeadLetterBranch 覆盖 poll 中 score<0 达到 RetryTimes 的死信分支
+// scriptIdx 脚本顺序与 newRedisTopicQueue 中 builder.Build 调用顺序保持一致
+const (
+	idxMove        = 0
+	idxAdd         = 1
+	idxLength      = 2
+	idxAckSuccess  = 3
+	idxAckFailed   = 4
+	idxFailedCount = 5
+)
+
+// stubAllScriptsOK 让所有脚本返回成功，避免空 stub 触发 NOSCRIPT
+func stubAllScriptsOK(b *fakeScriptBuilder) {
+	for i := range b.scripts {
+		ii := i
+		_ = ii
+		b.scripts[i].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
+			return []interface{}{true}, nil
+		}
+	}
+}
+
+// TestRedisQueue_Poll_DeadLetterBranch 覆盖 poll 中失败计数已达 RetryTimes 的死信分支
 func TestRedisQueue_Poll_DeadLetterBranch(t *testing.T) {
 	b := &fakeScriptBuilder{}
 	var deadCh = make(chan *Item, 1)
@@ -193,13 +214,17 @@ func TestRedisQueue_Poll_DeadLetterBranch(t *testing.T) {
 	)
 	rq := tp.(*redisQueue)
 
-	// moveScript 返回已失败 score=-5 的 item
-	b.scripts[0].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
-		return []interface{}{"bad", "-5"}, nil
+	// moveScript 返回到期的 item
+	b.scripts[idxMove].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
+		return []interface{}{"bad", "0"}, nil
 	}
-	// ackSuccessScript no-op
-	for i := 1; i < len(b.scripts); i++ {
-		b.scripts[i].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
+	// failedCountScript 返回失败次数已达 2（>= RetryTimes 触发死信）
+	b.scripts[idxFailedCount].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
+		return []interface{}{int64(2)}, nil
+	}
+	// 其它脚本（包括 ackSuccess）返回成功
+	for _, idx := range []int{idxAdd, idxLength, idxAckSuccess, idxAckFailed} {
+		b.scripts[idx].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
 			return []interface{}{true}, nil
 		}
 	}
@@ -212,12 +237,15 @@ func TestRedisQueue_Poll_DeadLetterBranch(t *testing.T) {
 		if string(it.GetValue()) != "bad" {
 			t.Fatalf("dead letter value mismatch: %s", it.GetValue())
 		}
+		if it.GetDelaySecond() != -2 {
+			t.Fatalf("dead letter item should carry failed count -2, got %d", it.GetDelaySecond())
+		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("dead letter not triggered")
 	}
 }
 
-// TestRedisQueue_Poll_FailedButUnderRetry 覆盖 score<0 但未达到 RetryTimes 的重新执行分支
+// TestRedisQueue_Poll_FailedButUnderRetry 覆盖失败计数<RetryTimes 时重新执行 handler 的分支
 func TestRedisQueue_Poll_FailedButUnderRetry(t *testing.T) {
 	b := &fakeScriptBuilder{}
 	tp := NewRedisTopicQueue(context.Background(), "poll-retry",
@@ -226,11 +254,15 @@ func TestRedisQueue_Poll_FailedButUnderRetry(t *testing.T) {
 	)
 	rq := tp.(*redisQueue)
 
-	b.scripts[0].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
-		return []interface{}{"retry-me", "-2"}, nil
+	b.scripts[idxMove].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
+		return []interface{}{"retry-me", "0"}, nil
 	}
-	for i := 1; i < len(b.scripts); i++ {
-		b.scripts[i].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
+	// failed count = 2, 仍小于 RetryTimes=10
+	b.scripts[idxFailedCount].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
+		return []interface{}{int64(2)}, nil
+	}
+	for _, idx := range []int{idxAdd, idxLength, idxAckSuccess, idxAckFailed} {
+		b.scripts[idx].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
 			return []interface{}{true}, nil
 		}
 	}

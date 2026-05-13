@@ -213,7 +213,7 @@ func newMemoryTopicQueue(ctx context.Context, topic string, opts *Options) Topic
 
 // onFailed 内存队列的失败回调
 // 语义：Item.DelaySecond 为负时，其绝对值作为已失败次数。
-// 达到 RetryTimes 投递死信，否则以 1 秒延迟重入队列并累计失败次数。
+// 达到 RetryTimes 投递死信，否则按 retry 策略计算延迟并重入队列。
 func (q *memQueue) onFailed(item *Item) error {
 	failedCount := 0
 	if item.GetDelaySecond() < 0 {
@@ -233,7 +233,12 @@ func (q *memQueue) onFailed(item *Item) error {
 		DelaySecond: int64(-failedCount), // 负值编码失败次数
 		Value:       item.GetValue(),
 	}
-	return q.pushRetry(retry, 1)
+	delay := computeRetryDelay(q.opts, failedCount)
+	delaySec := int64(delay / time.Second)
+	if delaySec < 1 {
+		delaySec = 1 // 时间轮粒度为 1s，重试至少等下一个 tick
+	}
+	return q.pushRetry(retry, delaySec)
 }
 
 // pushRetry 按给定 delaySecond 重新入队，不修改 item.DelaySecond 中编码的失败计数

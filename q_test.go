@@ -155,29 +155,37 @@ func TestQueue_MonitorCounter(t *testing.T) {
 		v, _ := metrics.LoadOrStore(metric, new(int64))
 		atomic.AddInt64(v.(*int64), value)
 	}
-	q := New(WithMonitorCounter(inc))
+	q := New(WithMonitorCounter(inc), WithRetryTimes(0))
 	defer q.Close()
 
-	var wg sync.WaitGroup
-	wg.Add(2) // 一次成功，一次失败
-	var round int32
+	// 通过 value 内容控制成功/失败路径，避免基于全局计数器的非确定性
 	if err := q.Start("m", func(item *Item) error {
-		defer wg.Done()
-		n := atomic.AddInt32(&round, 1)
-		if n%2 == 0 {
+		if string(item.GetValue()) == "fail" {
 			return fmt.Errorf("boom")
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Push(&Item{Topic: "m", DelaySecond: 1, Value: []byte("a")}); err != nil {
+	if err := q.Push(&Item{Topic: "m", DelaySecond: 1, Value: []byte("ok")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Push(&Item{Topic: "m", DelaySecond: 1, Value: []byte("b")}); err != nil {
+	if err := q.Push(&Item{Topic: "m", DelaySecond: 1, Value: []byte("fail")}); err != nil {
 		t.Fatal(err)
 	}
-	waitWithTimeout(t, &wg, 5*time.Second)
+
+	// 等待两个 metric 同时出现
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		hv, _ := metrics.Load("delayq_handle")
+		ev, _ := metrics.Load("delayq_handle_error")
+		if hv != nil && ev != nil &&
+			atomic.LoadInt64(hv.(*int64)) >= 1 &&
+			atomic.LoadInt64(ev.(*int64)) >= 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	produceV, _ := metrics.Load("delayq_produce")
 	if produceV == nil || atomic.LoadInt64(produceV.(*int64)) < 2 {
@@ -187,7 +195,6 @@ func TestQueue_MonitorCounter(t *testing.T) {
 	if handleV == nil || atomic.LoadInt64(handleV.(*int64)) < 1 {
 		t.Fatalf("handle metric missing: %v", handleV)
 	}
-	// error 分支也应命中
 	errV, _ := metrics.Load("delayq_handle_error")
 	if errV == nil || atomic.LoadInt64(errV.(*int64)) < 1 {
 		t.Fatalf("handle_error metric missing: %v", errV)

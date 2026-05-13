@@ -1,6 +1,8 @@
 package delayq
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -23,5 +25,15 @@ func OptionsOptionDeclareWithDefault() interface{} {
 		"Logger": Logger(nil),
 		// annotation@MaxConcurrency(comment="单 topic 业务处理最大并发 goroutine 数，<=0 表示不限制")
 		"MaxConcurrency": 256,
+		// annotation@VisibilityTimeout(comment="Redis 队列：item 被 poll 拉走后多久未 ack 视为失败被 reclaim")
+		"VisibilityTimeout": 10 * time.Minute,
+		// annotation@RetryInterval(comment="基础重试间隔；下次重试时间 = now + RetryInterval * RetryBackoff^failedCount，且不超过 MaxRetryInterval")
+		"RetryInterval": 1 * time.Second,
+		// annotation@RetryBackoff(comment="重试退避系数，<=1 表示不退避（固定间隔）")
+		"RetryBackoff": 1.0,
+		// annotation@MaxRetryInterval(comment="重试间隔上限")
+		"MaxRetryInterval": 60 * time.Second,
+		// annotation@RetryIntervalFunc(comment="自定义重试间隔函数，传入失败次数（>=1），返回下次重试延迟；非 nil 时优先于 RetryInterval/Backoff")
+		"RetryIntervalFunc": (func(failedCount int) time.Duration)(nil),
 	}
 }
