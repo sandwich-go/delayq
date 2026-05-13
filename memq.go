@@ -12,15 +12,15 @@ import (
 const wheelSize = 3600
 
 type wheelNode struct {
-	Id         string
-	CycleCount int
-	WheelIndex int
-	Item       *Item
-	Next       *wheelNode
+	id         string
+	cycleCount int
+	wheelIndex int
+	item       *Item
+	next       *wheelNode
 }
 
 type wheel struct {
-	Nodes *wheelNode
+	nodes *wheelNode
 }
 
 type ticker struct {
@@ -207,7 +207,7 @@ func NewMemoryTopicQueue(ctx context.Context, topic string, opts ...Option) Topi
 func newMemoryTopicQueue(ctx context.Context, topic string, opts *Options) TopicQueue {
 	q := &memQueue{query: make(map[string]struct{})}
 	q.baseQueue = newBaseQueue(ctx, topic, opts)
-	q.baseQueue.failed = q.onFailed
+	q.failed = q.onFailed
 	return q
 }
 
@@ -258,13 +258,13 @@ func (q *memQueue) pushRetry(item *Item, delaySecond int64) error {
 
 	id := strconv.FormatUint(atomic.AddUint64(&q.idSeq, 1), 10)
 	n := &wheelNode{
-		Id:         id,
-		CycleCount: cycle,
-		WheelIndex: idx,
-		Item:       item,
-		Next:       q.wheels[idx].Nodes,
+		id:         id,
+		cycleCount: cycle,
+		wheelIndex: idx,
+		item:       item,
+		next:       q.wheels[idx].nodes,
 	}
-	q.wheels[idx].Nodes = n
+	q.wheels[idx].nodes = n
 	q.query[id] = struct{}{}
 	return nil
 }
@@ -276,23 +276,23 @@ func (q *memQueue) ticker() error {
 	q.index = headIndex + 1
 
 	// 使用 dummy head 简化链表删除
-	dummy := &wheelNode{Next: q.wheels[headIndex].Nodes}
+	dummy := &wheelNode{next: q.wheels[headIndex].nodes}
 	prev := dummy
 	var due []*Item
-	for p := dummy.Next; p != nil; {
-		if p.CycleCount == 0 {
+	for p := dummy.next; p != nil; {
+		if p.cycleCount == 0 {
 			// 取出并从链表中摘除
-			due = append(due, p.Item)
-			delete(q.query, p.Id)
-			prev.Next = p.Next
-			p = p.Next
+			due = append(due, p.item)
+			delete(q.query, p.id)
+			prev.next = p.next
+			p = p.next
 		} else {
-			p.CycleCount--
+			p.cycleCount--
 			prev = p
-			p = p.Next
+			p = p.next
 		}
 	}
-	q.wheels[headIndex].Nodes = dummy.Next
+	q.wheels[headIndex].nodes = dummy.next
 	q.mx.Unlock()
 
 	if len(due) > 0 {
@@ -331,13 +331,13 @@ func (q *memQueue) Push(item *Item) error {
 
 	id := strconv.FormatUint(atomic.AddUint64(&q.idSeq, 1), 10)
 	n := &wheelNode{
-		Id:         id,
-		CycleCount: cycle,
-		WheelIndex: idx,
-		Item:       item,
-		Next:       q.wheels[idx].Nodes,
+		id:         id,
+		cycleCount: cycle,
+		wheelIndex: idx,
+		item:       item,
+		next:       q.wheels[idx].nodes,
 	}
-	q.wheels[idx].Nodes = n
+	q.wheels[idx].nodes = n
 	q.query[id] = struct{}{}
 	return nil
 }

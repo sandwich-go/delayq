@@ -63,6 +63,8 @@ func monitorCount(metric string, topic string, opts *Options, values ...int) {
 func (q *baseQueue) monitorCount(metric string, values ...int) {
 	monitorCount(metric, q.topic, q.opts, values...)
 }
-func (q *queue) monitorCounter(metric, topic string, values ...int) {
-	monitorCount(metric, topic, q.opts, values...)
+
+// monitorCounter 由 queue 外观层调用，按 topic 上报计数（永远 +1）
+func (q *queue) monitorCounter(metric, topic string) {
+	monitorCount(metric, topic, q.opts)
 }

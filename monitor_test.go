@@ -109,9 +109,9 @@ func TestMonitorCount_WithValues(t *testing.T) {
 	opts := newConfig(WithMonitorCounter(func(metric string, value int64, _ prometheus.Labels) {
 		atomic.AddInt64(&total, value)
 	}))
-	monitorCount("m", "t", opts)      // +1
-	monitorCount("m", "t", opts, 5)   // +5
-	monitorCount("m", "t", opts, 10)  // +10
+	monitorCount("m", "t", opts)     // +1
+	monitorCount("m", "t", opts, 5)  // +5
+	monitorCount("m", "t", opts, 10) // +10
 	if total != 16 {
 		t.Fatalf("want total=16 got=%d", total)
 	}

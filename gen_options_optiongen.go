@@ -193,12 +193,12 @@ func (cc *Options) GetOnDeadLetter() func(item *Item)         { return cc.OnDead
 func (cc *Options) GetMonitorCounter() func(metric string, value int64, labels prometheus.Labels) {
 	return cc.MonitorCounter
 }
-func (cc *Options) GetLogger() Logger                                   { return cc.Logger }
-func (cc *Options) GetMaxConcurrency() int                              { return cc.MaxConcurrency }
-func (cc *Options) GetVisibilityTimeout() time.Duration                 { return cc.VisibilityTimeout }
-func (cc *Options) GetRetryInterval() time.Duration                     { return cc.RetryInterval }
-func (cc *Options) GetRetryBackoff() float64                            { return cc.RetryBackoff }
-func (cc *Options) GetMaxRetryInterval() time.Duration                  { return cc.MaxRetryInterval }
+func (cc *Options) GetLogger() Logger                   { return cc.Logger }
+func (cc *Options) GetMaxConcurrency() int              { return cc.MaxConcurrency }
+func (cc *Options) GetVisibilityTimeout() time.Duration { return cc.VisibilityTimeout }
+func (cc *Options) GetRetryInterval() time.Duration     { return cc.RetryInterval }
+func (cc *Options) GetRetryBackoff() float64            { return cc.RetryBackoff }
+func (cc *Options) GetMaxRetryInterval() time.Duration  { return cc.MaxRetryInterval }
 func (cc *Options) GetRetryIntervalFunc() func(failedCount int) time.Duration {
 	return cc.RetryIntervalFunc
 }

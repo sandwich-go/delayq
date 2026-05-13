@@ -1,0 +1,89 @@
+# golangci-lint v2 配置
+# https://golangci-lint.run/usage/configuration/
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  go: "1.20"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - misspell
+    - unconvert
+    - unparam
+    - bodyclose
+    - prealloc
+    - revive
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (github.com/sandwich-go/delayq.TopicQueue).Close
+        - (github.com/sandwich-go/delayq.Queue).Close
+
+    govet:
+      enable:
+        - shadow
+
+    staticcheck:
+      checks: ["all", "-ST1000", "-ST1003", "-ST1020", "-ST1021"]
+
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - commentFormatting
+
+    revive:
+      rules:
+        - name: var-naming
+        - name: early-return
+        - name: indent-error-flow
+
+    misspell:
+      locale: US
+
+  exclusions:
+    rules:
+      # 测试代码放宽
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unparam
+          - gocritic
+          - revive
+          - prealloc
+      # 生成代码不检查
+      - path: item\.pb\.go
+        linters:
+          - errcheck
+          - govet
+          - staticcheck
+          - unused
+          - gocritic
+          - revive
+      - path: gen_options_optiongen\.go
+        linters:
+          - errcheck
+          - govet
+          - staticcheck
+          - unused
+          - gocritic
+          - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

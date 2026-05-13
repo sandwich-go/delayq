@@ -15,7 +15,9 @@ import (
 type redissonScriptBuilder struct{ c redisson.Cmdable }
 type redissonScript struct{ s redisson.Scripter }
 
-func (b redissonScriptBuilder) Build(src string) RedisScript { return redissonScript{s: b.c.CreateScript(src)} }
+func (b redissonScriptBuilder) Build(src string) RedisScript {
+	return redissonScript{s: b.c.CreateScript(src)}
+}
 
 func (s redissonScript) EvalSha(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
 	return s.s.EvalSha(ctx, keys, args...).Slice()

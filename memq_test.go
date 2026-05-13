@@ -56,7 +56,7 @@ func TestMemoryQueue(t *testing.T) {
 	tp := NewMemoryTopicQueue(context.Background(), "")
 	defer tp.Close()
 	err := tp.Start(func(item *Item) error {
-		t.Log(time.Now().Sub(now))
+		t.Log(time.Since(now))
 		atomic.AddInt64(&count, 1)
 		wg.Done()
 		return nil
@@ -90,7 +90,7 @@ func TestMemoryQueueHandleFailed(t *testing.T) {
 	}))
 	defer tp.Close()
 	err := tp.Start(func(item *Item) error {
-		t.Log(time.Now().Sub(now))
+		t.Log(time.Since(now))
 		atomic.AddInt64(&count, 1)
 		wg.Done()
 		return fmt.Errorf("error")

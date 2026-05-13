@@ -88,8 +88,8 @@ type RedisScriptBuilder interface {
 type redisQueue struct {
 	*baseQueue
 
-	delaySetKey  string
-	doingSetKey  string
+	delaySetKey   string
+	doingSetKey   string
 	failedHashKey string
 
 	moveScript        RedisScript
@@ -123,8 +123,8 @@ func newRedisTopicQueue(ctx context.Context, topic string, opts *Options) TopicQ
 		q.failedHashKey = fmt.Sprintf("%s:%s", prefix, q.failedHashKey)
 	}
 	q.baseQueue = newBaseQueue(ctx, topic, opts)
-	q.baseQueue.success = q.onSuccess
-	q.baseQueue.failed = q.onFailed
+	q.success = q.onSuccess
+	q.failed = q.onFailed
 	return q
 }
 

@@ -2,6 +2,7 @@ package delayq
 
 import (
 	"errors"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 

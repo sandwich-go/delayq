@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package delayq;
+
+option go_package = "github.com/sandwich-go/delayq;delayq";
+
+// Item 延迟队列中的一条数据
+message Item {
+  // 主题
+  string topic = 1;
+  // 延迟秒数（相对当前时间）
+  int64 delay_second = 2;
+  // 业务自定义负载
+  bytes value = 3;
+}
