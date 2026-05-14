@@ -399,25 +399,43 @@ Drain 期间：
 
 ## 性能
 
-在 Apple M2 Pro / Go 1.25 上的 micro-benchmark 数据（单线程）：
+### 内存队列
 
-| 操作 | ns/op | ops/s | allocs/op |
-|------|------|-------|-----------|
-| Push（默认，含 byValue 索引） | ~550 | 1.8M | 6 |
-| Push（`WithDisableValueIndex(true)`） | ~225 | 4.4M | 3 |
-| PushBatch（1000 items） | ~488 μs | 2M items/s | 6/item |
-| Get（10000 items 库） | ~68 | 14M | 1 |
-| Cancel | ~234 | 4.3M | 1 |
-| Length | ~15 | 67M | 0 |
-| 时间轮 sweep（1000 due） | ~556 μs | 1.8M items/s | 3.8/item |
+| 操作 | macOS M2 Pro | Linux x86_64 (CI) | allocs |
+|------|------:|------:|------:|
+| Push（默认，含 byValue 索引） | 490 ns/op (2.0M ops/s) | 见 [Actions Artifact][bench] | 6 |
+| Push（`WithDisableValueIndex`） | **218 ns/op** (4.6M ops/s) | 见 [Actions Artifact][bench] | 3 |
+| PushBatch (1000 items) | 533 μs (**1.9M items/s**) | 见 [Actions Artifact][bench] | 6/item |
+| Get | 69 ns (14M ops/s) | 见 [Actions Artifact][bench] | 1 |
+| Cancel | 248 ns (4.0M ops/s) | 见 [Actions Artifact][bench] | 1 |
+| Length | **15 ns** (67M ops/s) | 见 [Actions Artifact][bench] | 0 |
+| 时间轮 sweep (1000 due) | 549 μs (1.8M items/s) | 见 [Actions Artifact][bench] | 3.9/item |
 
-`WithDisableValueIndex` 在不需要 `Get`/`Cancel` 的高吞吐场景下推荐启用，可省一次 map 写入与一次 string 拷贝。
+### Redis 队列
 
-跑 benchmark：
+Push 性能受 redisson 客户端 + 网络 RTT 主导。本地 docker redis 6.2 测得：
+
+| 操作 | macOS M2 Pro + 本地 Docker | Linux + service container | 备注 |
+|------|------:|------:|------|
+| Push | 156 μs (~6.4k ops/s) | 见 [Actions Artifact][bench] | 单连接 |
+| PushBatch (1000) | 见 Actions | 见 [Actions Artifact][bench] | 单 Lua 脚本 |
+| Length | 166 μs | 见 [Actions Artifact][bench] | 一次 ZCARD x2 |
+
+[bench]: https://github.com/sandwich-go/delayq/actions/workflows/benchmark.yml
+
+### 本地跑 benchmark
 
 ```bash
+# 内存
 go test -bench=. -benchmem -benchtime=1s ./...
+
+# Redis（需要本地 Redis）
+make test-integration                                 # 仅集成测试
+REDIS_ADDR=127.0.0.1:6379 go test -tags=integration \
+  -run=^$ -bench=BenchmarkRedisQueue -benchmem .      # Redis benchmark
 ```
+
+`WithDisableValueIndex` 在不需要 `Get`/`Cancel` 的高吞吐场景下推荐启用，可省一次 map 写入与一次 string 拷贝（Push 提速 ~55%）。
 
 ## 注意事项
 
