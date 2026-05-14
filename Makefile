@@ -16,6 +16,15 @@ test: ## 运行测试
 test-race: ## 运行测试（含 race detector）
 	$(GO) test $(GOFLAGS) -race -count=1 -timeout 240s ./...
 
+loadtest: ## 短期内存压测（5min, 内存模式）；调参见 cmd/loadtest/README.md
+	$(GO) run ./cmd/loadtest -duration=5m -qps=2000
+
+loadtest-24h: ## 24h 内存模式压测，结果写 loadtest-snapshot.json
+	$(GO) run ./cmd/loadtest -duration=24h -qps=5000 -interval=1m
+
+loadtest-redis: ## Redis 模式压测（需要 REDIS_ADDR 环境变量或本地 6379）
+	$(GO) run ./cmd/loadtest -redis=$${REDIS_ADDR:-127.0.0.1:6379} -duration=10m -qps=2000 -interval=10s
+
 test-integration: ## 运行 Redis 集成测试（需要 REDIS_ADDR 或本地 docker）
 	@if [ -z "$(REDIS_ADDR)" ]; then \
 		echo "starting docker redis..."; \

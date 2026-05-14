@@ -376,6 +376,27 @@ Drain 期间：
 - [`manualack/`](examples/manualack) - 手动 ack/nack 异步处理
 - [`graceful/`](examples/graceful) - 优雅退出 + Prometheus
 
+## 长跑稳定性测试
+
+[`cmd/loadtest`](cmd/loadtest) 提供专门的压测工具，可灵活调参覆盖 24h 长跑场景：
+
+```bash
+# 内存模式 5 分钟快速验证
+make loadtest
+
+# 24 小时压测
+make loadtest-24h
+
+# Redis 模式
+make loadtest-redis
+
+# 自定义：注入 5% 错误，跑 1 小时高吞吐
+go run ./cmd/loadtest -preset=highthroughput -duration=1h -qps=10000 -error-rate=0.05
+```
+
+支持：实时 TSV 表格 + JSON 快照 + Prometheus endpoint + 自动健康检查（残留 / 泄漏 / p99 / GC）。
+详见 [cmd/loadtest/README.md](cmd/loadtest/README.md)。
+
 ## Options 一览
 
 | Option | 默认值 | 说明 |
