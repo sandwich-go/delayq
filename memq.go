@@ -45,7 +45,11 @@ type baseQueue struct {
 	failed        safeHandleItemFunc
 	success       safeHandleItemFunc
 	manualHandler func(*Item, Acker) // 非 nil 时启用手动 ack 模式
-	limiter       *tokenBucket       // Push 限流器，nil 表示不限流
+	// onItemStart 在 handler 即将执行前调用，返回 stop 函数；
+	// stop 会在 handler 完成（含 panic / Acker.Ack/Nack）后被调用。
+	// 用于 Redis 心跳延期等扩展。
+	onItemStart func(*Item) (stop func())
+	limiter     *tokenBucket // Push 限流器，nil 表示不限流
 
 	// wg 用于 ticker goroutine 的等待
 	wg sync.WaitGroup
@@ -213,6 +217,15 @@ func (q *baseQueue) executeOneWithRetry(item *Item) {
 		q.inFlight.Add(-1)
 		q.monitorObserve(MetricHandleDurationMs, nowFunc().Sub(start).Milliseconds())
 	}()
+
+	// onItemStart 钩子：用于 Redis 模式启动 heartbeat 等扩展
+	var stopHook func()
+	if q.onItemStart != nil {
+		stopHook = q.onItemStart(item)
+	}
+	if stopHook != nil {
+		defer stopHook()
+	}
 
 	// manual ack 模式：派发给用户回调 + Acker，由用户决定何时 ack
 	if q.manualHandler != nil {

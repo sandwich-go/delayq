@@ -28,6 +28,10 @@ const (
 	MetricReclaimError = "delayq_reclaim_error"
 	// MetricRateLimited Push 被限流拒绝 (Counter)
 	MetricRateLimited = "delayq_rate_limited"
+	// MetricHeartbeat doing 集心跳成功延期 (Counter)
+	MetricHeartbeat = "delayq_heartbeat"
+	// MetricHeartbeatError doing 集心跳失败 (Counter)
+	MetricHeartbeatError = "delayq_heartbeat_error"
 )
 
 type statsGetter interface {

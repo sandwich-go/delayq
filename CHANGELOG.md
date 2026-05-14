@@ -6,6 +6,16 @@
 
 首个生产可用版本，详见 [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md)。
 
+### Added (心跳自动延期)
+
+- **Heartbeat 自动延期**：Redis 模式下 handler 执行期间自动每 `VisibilityTimeout/3`（至少 1s）通过 `ZADD XX` 刷新 doing 集 score，**长任务不再需要把 VisibilityTimeout 调极大也不会被重复派发**。
+  - 新增 `WithHeartbeatInterval(d)` Option：默认 `0` = `VisibilityTimeout/3`；`-1` 显式禁用
+  - 业务 Ack 后心跳自动退出（通过 ZSCORE 检测），不会复活已删除 item
+  - 进程崩溃 → 心跳停止 → reclaim 接手 → 重新派发，恢复语义清晰
+  - 手动 ack 模式下心跳仅覆盖 handler 函数返回前的同步阶段
+  - 新增 metric：`MetricHeartbeat` / `MetricHeartbeatError`
+  - 新增 `baseQueue.onItemStart` 钩子（私有），允许后端注入 per-item 生命周期扩展
+
 ### Added (本轮新增 - F4/F5/F6/F8)
 
 - **F4 限流**：`WithPushRatePerSec(rate)` + `WithPushBurst(burst)` token bucket，超限返回 `ErrRateLimited`。新增 `MetricRateLimited` 指标。

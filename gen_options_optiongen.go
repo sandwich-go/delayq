@@ -43,6 +43,8 @@ type Options struct {
 	PushRatePerSec float64
 	// annotation@PushBurst(comment="Push 限流 burst 容量，<=0 时取 PushRatePerSec 同值")
 	PushBurst float64
+	// annotation@HeartbeatInterval(comment="Redis 队列：handler 执行期间自动延期 doing 集 score 的心跳间隔；<=0 表示不开启心跳，0 = VisibilityTimeout/3")
+	HeartbeatInterval time.Duration
 }
 
 // newConfig new Options
@@ -179,6 +181,14 @@ func WithPushBurst(v float64) Option {
 	}
 }
 
+// WithHeartbeatInterval Redis 队列：handler 执行期间自动延期 doing 集 score 的心跳间隔；
+// <0 表示禁用心跳；0（默认）= VisibilityTimeout/3
+func WithHeartbeatInterval(v time.Duration) Option {
+	return func(cc *Options) {
+		cc.HeartbeatInterval = v
+	}
+}
+
 // InstallOptionsWatchDog the installed func will called when newConfig  called
 func InstallOptionsWatchDog(dog func(cc *Options)) { watchDogOptions = dog }
 
@@ -207,6 +217,7 @@ func newDefaultOptions() *Options {
 		WithDisableValueIndex(false),
 		WithPushRatePerSec(0),
 		WithPushBurst(0),
+		WithHeartbeatInterval(0),
 	} {
 		opt(cc)
 	}
@@ -233,8 +244,9 @@ func (cc *Options) GetRetryIntervalFunc() func(failedCount int) time.Duration {
 	return cc.RetryIntervalFunc
 }
 func (cc *Options) GetDisableValueIndex() bool { return cc.DisableValueIndex }
-func (cc *Options) GetPushRatePerSec() float64  { return cc.PushRatePerSec }
-func (cc *Options) GetPushBurst() float64       { return cc.PushBurst }
+func (cc *Options) GetPushRatePerSec() float64           { return cc.PushRatePerSec }
+func (cc *Options) GetPushBurst() float64                { return cc.PushBurst }
+func (cc *Options) GetHeartbeatInterval() time.Duration  { return cc.HeartbeatInterval }
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
@@ -254,6 +266,7 @@ type OptionsVisitor interface {
 	GetDisableValueIndex() bool
 	GetPushRatePerSec() float64
 	GetPushBurst() float64
+	GetHeartbeatInterval() time.Duration
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options

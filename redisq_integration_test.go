@@ -323,6 +323,86 @@ func TestIntegration_Redis_Concurrent(t *testing.T) {
 	}
 }
 
+// TestIntegration_Redis_HeartbeatExtendsVisibility 验证长任务 handler 不会被 reclaim 误判
+//
+// 配置 VisibilityTimeout=2s, heartbeatInterval=500ms, handler 耗时 5s（远超 2s）。
+// 期望：handler 完整执行 1 次（不重复派发）。
+func TestIntegration_Redis_HeartbeatExtendsVisibility(t *testing.T) {
+	topic := uniqueTopic(t)
+	tp := NewRedisTopicQueue(context.Background(), topic,
+		WithRedisScriptBuilder(realRedisBuilder(t)),
+		WithLogger(NopLogger()),
+		WithVisibilityTimeout(2*time.Second),
+		WithHeartbeatInterval(500*time.Millisecond),
+		WithRetryTimes(0),
+	)
+	defer tp.Close()
+
+	var attempts int32
+	doneCh := make(chan struct{}, 1)
+	if err := tp.Start(func(item *Item) error {
+		n := atomic.AddInt32(&attempts, 1)
+		if n == 1 {
+			// 长任务：5s（远超 visibility=2s）
+			time.Sleep(5 * time.Second)
+			doneCh <- struct{}{}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tp.Push(&Item{Value: []byte("long-task")}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-doneCh:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("handler timeout, attempts=%d", atomic.LoadInt32(&attempts))
+	}
+
+	// 给 reclaim 一些时间观察是否会再次派发
+	time.Sleep(3 * time.Second)
+	if a := atomic.LoadInt32(&attempts); a != 1 {
+		t.Fatalf("heartbeat should prevent re-dispatch, but handler was called %d times", a)
+	}
+}
+
+// TestIntegration_Redis_HeartbeatDisabled 显式禁用心跳时长任务会被重复派发
+//
+// 这是反例验证：禁用心跳后 visibility=2s + handler 5s 必定触发 reclaim。
+func TestIntegration_Redis_HeartbeatDisabled(t *testing.T) {
+	topic := uniqueTopic(t)
+	tp := NewRedisTopicQueue(context.Background(), topic,
+		WithRedisScriptBuilder(realRedisBuilder(t)),
+		WithLogger(NopLogger()),
+		WithVisibilityTimeout(2*time.Second),
+		WithHeartbeatInterval(-1), // 显式禁用
+		WithRetryTimes(0),
+	)
+	defer tp.Close()
+
+	var attempts int32
+	if err := tp.Start(func(item *Item) error {
+		atomic.AddInt32(&attempts, 1)
+		time.Sleep(5 * time.Second)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tp.Push(&Item{Value: []byte("long-no-heartbeat")}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 等到 reclaim（>2s+一个 ticker 周期）+ 第二次执行启动
+	time.Sleep(4 * time.Second)
+	if a := atomic.LoadInt32(&attempts); a < 2 {
+		t.Fatalf("without heartbeat, expected re-dispatch, got attempts=%d", a)
+	}
+}
+
 // TestIntegration_Redis_NOSCRIPT_Reload 验证 SCRIPT FLUSH 后 EvalSha → NOSCRIPT → Eval 路径
 func TestIntegration_Redis_NOSCRIPT_Reload(t *testing.T) {
 	addr := os.Getenv("REDIS_ADDR")

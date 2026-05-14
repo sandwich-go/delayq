@@ -44,5 +44,7 @@ func OptionsOptionDeclareWithDefault() interface{} {
 		"PushRatePerSec": float64(0),
 		// annotation@PushBurst(comment="Push 限流 burst 容量，<=0 时取 PushRatePerSec 同值")
 		"PushBurst": float64(0),
+		// annotation@HeartbeatInterval(comment="Redis 队列：handler 执行期间自动延期 doing 集 score 的心跳间隔；<=0 表示不开启心跳，0 = VisibilityTimeout/3")
+		"HeartbeatInterval": time.Duration(0),
 	}
 }

@@ -141,7 +141,7 @@ func main() {
 
 `{<topic>}` 中的 `{}` 是 Redis Cluster 的 hash tag，确保同一 topic 的所有 key 落在同一 slot，从而保证 Lua 脚本可以原子地操作多个 key。
 
-### Visibility Timeout
+### Visibility Timeout 与心跳
 
 `Push` 后 `poll` 把 item 从 delay 集搬到 doing 集，并将其 score 设为 `now + VisibilityTimeout`。当业务 handler 在这段时间内未 ack 成功（进程崩溃、handler 阻塞），`reclaim` 任务会把它搬回 delay 集重新派发。
 
@@ -152,7 +152,33 @@ dq := delayq.New(
 )
 ```
 
-> **不要**把 VisibilityTimeout 设得比业务 handler 最大耗时还短，否则会导致重复处理。
+#### 心跳自动延期（推荐）
+
+为了避免长任务被误判崩溃后重复派发，delayq 默认在 handler 执行期间启动心跳，每 `VisibilityTimeout/3`（至少 1s）自动刷新 doing 集 score：
+
+```go
+dq := delayq.New(
+    delayq.WithRedisScriptBuilder(builder),
+    delayq.WithVisibilityTimeout(2*time.Minute),
+    // 心跳间隔默认 = VisibilityTimeout/3 = 40s
+    // 自定义：
+    delayq.WithHeartbeatInterval(20*time.Second),
+)
+```
+
+效果：
+- handler 真实执行时长 > VisibilityTimeout 时**不会**被重复派发
+- 进程真崩溃 → 心跳停止 → reclaim 接手 → 重新派发（实现真正的恢复语义）
+- 业务已 Ack 后心跳自动检测到 doing 集中已无该 item 并退出（`ZADD XX` + `ZSCORE` 检测）
+
+显式禁用心跳：
+```go
+delayq.WithHeartbeatInterval(-1)
+```
+
+> **手动 ack 模式（StartManualAck）下心跳仅覆盖到 handler 函数返回**：业务在 handler 中通常立即返回交给后台异步处理，此时心跳已停止。建议在 manual ack 模式下保证 `VisibilityTimeout > 业务异步处理最大耗时`。
+
+新增 metric：`delayq_heartbeat`（成功）/ `delayq_heartbeat_error`（失败）。
 
 ## 批量推送 / 查询 / 取消
 
@@ -479,7 +505,7 @@ REDIS_ADDR=127.0.0.1:6379 go test -tags=integration \
 ### 其他
 
 - **Item.Value 在 Redis 模式下不可重复**：底层使用 ZSET，相同 value 后推会覆盖前者。请通过额外字段（如自增 ID）保证唯一性。
-- **VisibilityTimeout > Handler 最大耗时**：否则会重复派发。
+- **VisibilityTimeout 默认 10 分钟，心跳自动延期**：自动 ack 模式下 handler 长任务无需调大 VisibilityTimeout，心跳每 `VisibilityTimeout/3` 刷新一次（详见上文 "Visibility Timeout 与心跳"）。手动 ack 模式下需保证 `VisibilityTimeout > 业务异步处理最大耗时`，或自行管理 visibility。
 - **死信不会自动清理 failed Hash**：`OnDeadLetter` 触发后 delayq 会执行 ack（清除 doing/failed/delay），无需手动处理。
 - **时间轮粒度 1 秒**：内存队列最小延迟 1 秒；亚秒级延迟请考虑其他实现。
 - **OnDeadLetter 回调 panic 会被捕获**：用户回调 panic 不会导致队列崩溃，会以 ERROR 日志记录。

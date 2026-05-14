@@ -103,6 +103,21 @@ redis.call('HDEL', failed_hash, value)
 return {n}
 `
 
+// heartbeatLua 仅当 doing 集中存在该 value 时刷新其 score（XX 标志）。
+// 用于 handler 长时间执行期间避免 reclaim 误判。
+// 如果业务已 Ack（doing 中已删除），ZADD XX 不会复活该 item，返回 0。
+// 返回 {1} 表示心跳成功，{0} 表示该 item 已不在 doing 集（无需继续心跳）。
+var heartbeatLua = `
+local doing_set = KEYS[1]
+local value, new_score = ARGV[1], ARGV[2]
+local added = redis.call('ZADD', doing_set, 'XX', new_score, value)
+-- ZADD XX 在更新既有成员时返回 0；这里用 ZSCORE 判断是否还存在
+if redis.call('ZSCORE', doing_set, value) then
+	return {1}
+end
+return {0}
+`
+
 // RedisScript redis 脚本
 type RedisScript interface {
 	EvalSha(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error)
@@ -148,6 +163,7 @@ type redisQueue struct {
 	failedCountScript RedisScript
 	getScript         RedisScript
 	cancelScript      RedisScript
+	heartbeatScript   RedisScript
 }
 
 // NewRedisTopicQueue 构造一个使用 Redis 作为后端的 TopicQueue。
@@ -170,6 +186,7 @@ func newRedisTopicQueue(ctx context.Context, topic string, opts *Options) TopicQ
 		failedCountScript: builder.Build(failedCountLua),
 		getScript:         builder.Build(getLua),
 		cancelScript:      builder.Build(cancelLua),
+		heartbeatScript:   builder.Build(heartbeatLua),
 	}
 	if prefix := opts.GetPrefix(); len(prefix) > 0 {
 		q.delaySetKey = fmt.Sprintf("%s:%s", prefix, q.delaySetKey)
@@ -179,7 +196,84 @@ func newRedisTopicQueue(ctx context.Context, topic string, opts *Options) TopicQ
 	q.baseQueue = newBaseQueue(ctx, topic, opts)
 	q.success = q.onSuccess
 	q.failed = q.onFailed
+
+	// 心跳：handler 执行期间定期 ZADD XX 刷新 doing 集 score，避免 reclaim 误判长任务
+	if interval := q.heartbeatInterval(); interval > 0 {
+		q.onItemStart = q.startHeartbeat
+	}
 	return q
+}
+
+// heartbeatInterval 返回心跳间隔；0 表示禁用，否则返回实际间隔（默认 VisibilityTimeout/3）
+func (q *redisQueue) heartbeatInterval() time.Duration {
+	hi := q.opts.GetHeartbeatInterval()
+	if hi < 0 {
+		return 0 // 显式禁用
+	}
+	if hi > 0 {
+		return hi
+	}
+	// 默认 VisibilityTimeout/3，至少 1s
+	vt := q.opts.GetVisibilityTimeout()
+	if vt <= 0 {
+		return 0
+	}
+	d := vt / 3
+	if d < time.Second {
+		d = time.Second
+	}
+	return d
+}
+
+// startHeartbeat 启动 heartbeat goroutine，返回 stop 函数。
+// 每 interval 调用 heartbeatLua（ZADD XX）刷新 doing 集中该 item 的 score。
+// 若 ZSCORE 不再存在（业务已 ack），心跳自动退出。
+func (q *redisQueue) startHeartbeat(item *Item) func() {
+	interval := q.heartbeatInterval()
+	if interval <= 0 {
+		return nil
+	}
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	value := item.GetValue()
+
+	go func() {
+		defer close(doneCh)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-q.exitC:
+				return
+			case <-q.ctx.Done():
+				return
+			case <-t.C:
+			}
+			vt := int64(q.opts.GetVisibilityTimeout() / time.Second)
+			if vt <= 0 {
+				vt = 60
+			}
+			newScore := unix() + vt
+			res, err := q.runScript(q.opCtx(), q.heartbeatScript,
+				[]string{q.doingSetKey}, value, newScore)
+			if err != nil {
+				q.monitorCount(MetricHeartbeatError)
+				q.log.Warnf("topic=%s heartbeat error: %v", q.topic, err)
+				continue
+			}
+			// 返回 {0} 表示 doing 集中已不存在该 item（被 ack 或 cancel），结束心跳
+			if len(res) > 0 && parseInt64(res[0]) == 0 {
+				return
+			}
+			q.monitorCount(MetricHeartbeat)
+		}
+	}()
+	return func() {
+		close(stopCh)
+		<-doneCh
+	}
 }
 
 // opCtx 返回基于 q.ctx 的操作上下文，保证 Close/ctx 取消时 Redis 调用可被及时中断
