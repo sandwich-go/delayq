@@ -1,4 +1,4 @@
-name: delayq #bitbucket里的repo名
+name: delayq # 仓库名（github.com/sandwich-go/delayq）
 short_name:  # productName,默认是name
 
 make_step: #定制make操作步骤,选项有以下几种，默认bump+clog,多选项按顺序执行
@@ -71,7 +71,7 @@ pack:
     #bin/{os}: bin/{os}
     #example: example
 
-chglog:
-  change_log_ssh_url: git@bitbucket.org:funplus/devcenter-site.git # push到其他site，管理changelog版本的所在git地址，默认不同步
-  change_log_path: content/zh/  # release文件存放路径
+#chglog:
+#  change_log_ssh_url: git@bitbucket.org:funplus/devcenter-site.git # push到其他site，管理changelog版本的所在git地址，默认不同步
+#  change_log_path: content/zh/  # release文件存放路径
 

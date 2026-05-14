@@ -159,16 +159,16 @@ func TestRedisQueue_PoolReclaimUsesNow(t *testing.T) {
 	)
 	rq := tp.(*redisQueue)
 
-	var maxPriority int64
+	var maxScore int64
 	b.scripts[idxMove].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
-		atomic.StoreInt64(&maxPriority, args[0].(int64))
+		atomic.StoreInt64(&maxScore, args[0].(int64))
 		return []interface{}{}, nil
 	}
 	if err := rq.reclaim(); err != nil {
 		t.Fatal(err)
 	}
 	now := unix()
-	mp := atomic.LoadInt64(&maxPriority)
+	mp := atomic.LoadInt64(&maxScore)
 	if mp < now-2 || mp > now+2 {
 		t.Fatalf("reclaim should use now as max priority, got %d (now=%d)", mp, now)
 	}

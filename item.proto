@@ -8,7 +8,13 @@ option go_package = "github.com/sandwich-go/delayq;delayq";
 message Item {
   // 主题
   string topic = 1;
-  // 延迟秒数（相对当前时间）；与 ExecuteAt 二者择一，DelaySecond 优先级更高
+  // 延迟秒数（相对当前时间）。
+  //
+  // Push 时：负值视为 0（立即可执行）。
+  //
+  // Handler 接收时：当该 item 因失败重试再次派发时，DelaySecond 会被覆盖为
+  // 负值用于编码已失败次数（如 -3 表示已失败 3 次）。
+  // 用户的 handler 通常不应依赖此字段；如需观察重试次数，请记录业务侧 retry_count。
   int64 delay_second = 2;
   // 业务自定义负载，建议 <=1KB；Redis 模式下不可重复
   bytes value = 3;

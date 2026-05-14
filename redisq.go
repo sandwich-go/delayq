@@ -8,12 +8,15 @@ import (
 	"time"
 )
 
-// moveLua 把 source ZSET 中 score <= max_priority 的成员搬到 target，
-// 同时把 target 中的 score 设为 to_score。返回原始的 [value, score, value, score, ...]
+// moveLua 把 source ZSET 中 score <= max_score 的成员搬到 target，
+// 同时把 target 中的 score 设为 to_score。
+// 返回原始 ZRANGEBYSCORE 结果 [value, score, value, score, ...]
+//
+// 注意：max_score 是"score 上界"（通常是当前时间戳），与 delayq 的 Item.Priority 无关。
 var moveLua = `
 local source_set, target_set  = KEYS[1], KEYS[2]
-local max_priority, to_score = ARGV[1], ARGV[2]
-local items = redis.call('ZRANGEBYSCORE', source_set, '-inf', max_priority, 'WITHSCORES')
+local max_score, to_score = ARGV[1], ARGV[2]
+local items = redis.call('ZRANGEBYSCORE', source_set, '-inf', max_score, 'WITHSCORES')
 for i, value in ipairs(items) do
 	if i % 2 ~= 0 then
 		redis.call('ZADD', target_set, to_score or 0.0, value)
@@ -322,9 +325,9 @@ func (q *redisQueue) runScript(ctx context.Context, s RedisScript, keys []string
 	return ret, err
 }
 
-// move 把 source 中 score<=now 的项搬到 target，target 的 score 设为 toScore
-func (q *redisQueue) move(from, to string, maxPriority, toScore int64) ([]interface{}, error) {
-	return q.runScript(q.opCtx(), q.moveScript, []string{from, to}, maxPriority, toScore)
+// move 把 source 中 score<=maxScore 的项搬到 target，target 的 score 设为 toScore
+func (q *redisQueue) move(from, to string, maxScore, toScore int64) ([]interface{}, error) {
+	return q.runScript(q.opCtx(), q.moveScript, []string{from, to}, maxScore, toScore)
 }
 
 // poll 把 delay 集中到期的 item 搬到 doing 集，doing 集 score 设为 now+VisibilityTimeout，

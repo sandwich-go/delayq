@@ -26,7 +26,13 @@ type Item struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 主题
 	Topic string `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
-	// 延迟秒数（相对当前时间）；与 ExecuteAt 二者择一，DelaySecond 优先级更高
+	// 延迟秒数（相对当前时间）。
+	//
+	// Push 时：负值视为 0（立即可执行）。
+	//
+	// Handler 接收时：当该 item 因失败重试再次派发时，DelaySecond 会被覆盖为
+	// 负值用于编码已失败次数（如 -3 表示已失败 3 次）。
+	// 用户的 handler 通常不应依赖此字段；如需观察重试次数，请记录业务侧 retry_count。
 	DelaySecond int64 `protobuf:"varint,2,opt,name=delay_second,json=delaySecond,proto3" json:"delay_second,omitempty"`
 	// 业务自定义负载，建议 <=1KB；Redis 模式下不可重复
 	Value []byte `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
