@@ -371,7 +371,15 @@ func TestIntegration_Redis_HeartbeatExtendsVisibility(t *testing.T) {
 
 // TestIntegration_Redis_HeartbeatDisabled 显式禁用心跳时长任务会被重复派发
 //
-// 这是反例验证：禁用心跳后 visibility=2s + handler 5s 必定触发 reclaim。
+// 这是反例验证：禁用心跳后 visibility=2s + handler 长时间运行 → reclaim 必定触发。
+//
+// 时间预算分析（poll/reclaim 各 1s ticker）：
+//   T=0     push
+//   T=0~1   poll 拿走，doing score = T_poll + visibility = ~1+2 = 3
+//   T=1~3   reclaim 检查时 now < doing.score，不搬
+//   T=3~4   reclaim now=3~4, score=3 → 命中，搬回 delay 集
+//   T=4~5   poll 再次拿走 → 第二次 handler attempts=2
+// 最坏 case 需要 ~5s。这里 sleep 8s 留充足余量避免 CI 抖动 flaky。
 func TestIntegration_Redis_HeartbeatDisabled(t *testing.T) {
 	topic := uniqueTopic(t)
 	tp := NewRedisTopicQueue(context.Background(), topic,
@@ -386,7 +394,8 @@ func TestIntegration_Redis_HeartbeatDisabled(t *testing.T) {
 	var attempts int32
 	if err := tp.Start(func(item *Item) error {
 		atomic.AddInt32(&attempts, 1)
-		time.Sleep(5 * time.Second)
+		// handler 一直阻塞直到测试结束，让 reclaim 有机会触发
+		time.Sleep(20 * time.Second)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -396,11 +405,16 @@ func TestIntegration_Redis_HeartbeatDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 等到 reclaim（>2s+一个 ticker 周期）+ 第二次执行启动
-	time.Sleep(4 * time.Second)
-	if a := atomic.LoadInt32(&attempts); a < 2 {
-		t.Fatalf("without heartbeat, expected re-dispatch, got attempts=%d", a)
+	// 轮询观察直到 attempts >= 2 或超时
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&attempts) >= 2 {
+			return // 成功观察到重复派发
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
+	t.Fatalf("without heartbeat, expected re-dispatch within 15s, got attempts=%d",
+		atomic.LoadInt32(&attempts))
 }
 
 // TestIntegration_Redis_NOSCRIPT_Reload 验证 SCRIPT FLUSH 后 EvalSha → NOSCRIPT → Eval 路径
