@@ -31,14 +31,6 @@ func newTokenBucket(ratePerSec, burst float64) *tokenBucket {
 	}
 }
 
-// newTokenBucketWithIntBurst 与 newTokenBucket 相同，但 burst 取 int（option 使用整数容量）
-func newTokenBucketWithIntBurst(ratePerSec float64, burst int) *tokenBucket {
-	if burst <= 0 {
-		return nil
-	}
-	return newTokenBucket(ratePerSec, float64(burst))
-}
-
 // Allow 非阻塞地尝试消费一个 token，成功返回 true。
 func (b *tokenBucket) Allow() bool {
 	if b == nil {

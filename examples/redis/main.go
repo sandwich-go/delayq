@@ -43,7 +43,7 @@ func main() {
 	))
 
 	dq := delayq.New(
-		delayq.WithName("myapp"),
+		delayq.WithMetricNamespace("myapp"),
 		delayq.WithRedisScriptBuilder(scriptBuilder{c: c}),
 		delayq.WithVisibilityTimeout(2*time.Minute),
 		delayq.WithRetryTimes(3),
