@@ -26,7 +26,7 @@ func main() {
 	prometheus.MustRegister(pushedCounter)
 
 	dq := delayq.New(
-		delayq.WithName("myapp"),
+		delayq.WithMetricNamespace("myapp"),
 		delayq.WithMaxConcurrency(32),
 		delayq.WithMonitorCounter(func(metric string, value int64, labels prometheus.Labels) {
 			switch metric {
