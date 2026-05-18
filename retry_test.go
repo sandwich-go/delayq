@@ -172,6 +172,55 @@ func TestMemq_RetryWithCustomFunc(t *testing.T) {
 	}
 }
 
+// TestMemq_SubSecondRetry 验证亚秒级重试间隔在内存队列下真正生效（绕过时间轮 1s 粒度）
+//
+// 配置 RetryInterval=200ms，RetryTimes=2，期望 3 次执行（首次 + 2 次重试）累计耗时
+// 显著小于 3s（如果被时间轮截断为 1s，最少 2s 间隔 = 总 4s+）。
+func TestMemq_SubSecondRetry(t *testing.T) {
+	tp := NewMemoryTopicQueue(context.Background(), "memq-sub",
+		WithRetryTimes(2),
+		WithRetryInterval(200*time.Millisecond),
+		WithRetryBackoff(1.0),
+		WithMaxRetryInterval(500*time.Millisecond),
+	)
+	defer tp.Close()
+
+	var attempts int32
+	deadCh := make(chan time.Time, 1)
+	// 改造：onFailed 触发 dead letter 时记录时间
+	if err := tp.Start(func(item *Item) error {
+		n := atomic.AddInt32(&attempts, 1)
+		if n >= 3 {
+			// 第 3 次执行时通过 dead letter 钩子结束观察。但此时 handler 还没返回 err，无法触发死信。
+			// 改为直接在第 3 次记录时间，并继续返回 error 让其进入死信。
+			deadCh <- time.Now()
+		}
+		return errBoom
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	if err := tp.Push(&Item{Value: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case end := <-deadCh:
+		elapsed := end.Sub(start)
+		// 期望：首次几乎立即 + 200ms + 200ms ≈ 400ms+小开销。给 1.5s 余量。
+		// 若被时间轮截断成 1s，最少需要 2s。
+		if elapsed > 1500*time.Millisecond {
+			t.Fatalf("sub-second retry seems clamped, elapsed=%v (expect <1.5s)", elapsed)
+		}
+		if attempts < 3 {
+			t.Fatalf("expect at least 3 attempts, got %d", attempts)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timeout waiting 3rd attempt, attempts=%d", atomic.LoadInt32(&attempts))
+	}
+}
+
 // errBoom 共享的失败 error
 var errBoom = simpleErr("boom")
 
