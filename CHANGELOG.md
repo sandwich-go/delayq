@@ -2,6 +2,54 @@
 
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.0.1] - 2026-05-18
+
+行为统一与 option 补完。本版本含少量 break-change，但都为修正错误或不合理设计，建议所有 v1.0.0 用户升级。
+
+### Fixed (行为不一致 / Bug)
+
+- **`RetryTimes` 在 memq 与 redisq 行为统一**：v1.0.0 中 `RetryTimes=0` 在内存队列下"首次失败即死信"，但在 Redis 队列下"永不死信（无限重试）"，同一配置含义相反。现统一为：
+  - `> 0`：失败次数达到该值时投递死信（共执行 `1 + RetryTimes` 次）
+  - `== 0`：首次失败即死信（不重试）
+  - `< 0`：永不进入死信（无限重试）
+- **`HeartbeatInterval` option 注释自相矛盾修正**：原注释写"`<=0` 不开启心跳，`0 = VisibilityTimeout/3`"，与代码不符。现注释正确反映：`<0` 禁用 / `0` 默认 VisibilityTimeout/3 / `>0` 用配置值。
+- **memq 亚秒重试真正生效**：v1.0.0 中 `RetryInterval < 1s` 会被时间轮 1s 粒度截断为 1s，导致 `LowLatencyPreset` 的 500ms 配置实际 ≥1s。现通过 `time.AfterFunc` 旁路时间轮，亚秒重试间隔精确生效。
+
+### Added
+
+- **`WithPollInterval(d)` Option**：[redis] poll 轮询间隔，<=0 时回退默认 1s。原硬编码 1s 现可调。
+- **`WithReclaimInterval(d)` Option**：[redis] reclaim 轮询间隔，<=0 时回退默认 1s。原硬编码 1s 现可调。
+- **option 注释统一作用范围标记**：所有 option 注释加上 `[all]` / `[redis]` / `[memory]` 前缀，明确生效后端。
+- **回归测试 `TestMemq_SubSecondRetry`**：验证亚秒重试真正生效（200ms 间隔重试 3 次实测 ~0.4s，原 ≥2s）。
+
+### Changed (BREAKING)
+
+- **`Name` → `MetricNamespace` 重命名**：`Name` 字段名误导（看似实例名实则只控制 prometheus namespace）。`WithName` / `GetName` 保留为 `Deprecated` 别名，建议迁移到 `WithMetricNamespace` / `GetMetricNamespace`。
+- **`Prefix` → `RedisKeyPrefix` 重命名**：`Prefix` 仅对 Redis 后端生效，新名更准确。`WithPrefix` / `GetPrefix` 保留为 `Deprecated` 别名。
+- **`PushBurst` 类型 `float64` → `int`**：容量本质是整数。`WithPushBurst(2000)` 这类整数字面量调用兼容；`WithPushBurst(2000.5)` 这类浮点字面量需要改为整数。
+
+### Migration Guide
+
+```go
+// v1.0.0
+opts := []delayq.Option{
+    delayq.WithName("myapp"),
+    delayq.WithPrefix("__myapp"),
+    delayq.WithPushBurst(2000.0),
+    delayq.WithRetryTimes(0),  // Redis 下原本"无限重试"，现在"首次失败即死信"
+}
+
+// v1.0.1
+opts := []delayq.Option{
+    delayq.WithMetricNamespace("myapp"),
+    delayq.WithRedisKeyPrefix("__myapp"),
+    delayq.WithPushBurst(2000),
+    delayq.WithRetryTimes(-1), // 显式无限重试
+}
+```
+
+如果原 Redis 业务依赖 `RetryTimes=0` 的"无限重试"行为，必须改为 `RetryTimes=-1`，否则升级后会改为"首次失败即死信"。
+
 ## [1.0.0] - 2026-05-14
 
 首个生产可用版本，详见 [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md)。
