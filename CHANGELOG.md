@@ -2,7 +2,7 @@
 
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [1.0.0] - 待发布
+## [1.0.0] - 2026-05-14
 
 首个生产可用版本，详见 [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md)。
 

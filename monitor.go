@@ -49,7 +49,7 @@ type statsCollector struct {
 }
 
 func newCollector(getter statsGetter, opts *Options) Collector {
-	name := opts.GetName()
+	name := opts.GetMetricNamespace()
 	return &statsCollector{
 		getter: getter,
 		opts:   opts,

@@ -11,40 +11,44 @@ import (
 
 // Options should use newConfig to initialize it
 type Options struct {
-	// annotation@Name(comment="名称")
-	Name string
-	// annotation@Prefix(comment="前缀")
-	Prefix string
-	// annotation@RedisScriptBuilder(comment="redis 脚本工厂")
+	// annotation@MetricNamespace(comment="[all] Prometheus 指标 namespace")
+	MetricNamespace string
+	// annotation@RedisKeyPrefix(comment="[redis] Redis key 前缀")
+	RedisKeyPrefix string
+	// annotation@RedisScriptBuilder(comment="[redis] Redis 脚本工厂；非 nil 切换为 Redis 后端")
 	RedisScriptBuilder RedisScriptBuilder
-	// annotation@RetryTimes(comment="重试次数")
+	// annotation@RetryTimes(comment="[all] 失败重试上限。0 = 首次失败即死信；<0 = 无限重试")
 	RetryTimes int
-	// annotation@OnDeadLetter(comment="当有死信")
+	// annotation@OnDeadLetter(comment="[all] 死信回调")
 	OnDeadLetter func(item *Item)
-	// annotation@MonitorCounter(comment="监控统计函数")
+	// annotation@MonitorCounter(comment="[all] 监控上报回调")
 	MonitorCounter func(metric string, value int64, labels prometheus.Labels)
-	// annotation@Logger(comment="日志实现，默认输出到 stderr")
+	// annotation@Logger(comment="[all] 日志实现，nil 时使用默认 stderr logger")
 	Logger Logger
-	// annotation@MaxConcurrency(comment="单 topic 业务处理最大并发 goroutine 数，<=0 表示不限制")
+	// annotation@MaxConcurrency(comment="[all] 单 topic 业务处理最大并发 goroutine 数，<=0 表示不限制")
 	MaxConcurrency int
-	// annotation@VisibilityTimeout(comment="Redis 队列：item 被 poll 拉走后多久未 ack 视为失败被 reclaim")
+	// annotation@VisibilityTimeout(comment="[redis] item 被 poll 拉走后多久未 ack 视为失败被 reclaim")
 	VisibilityTimeout time.Duration
-	// annotation@RetryInterval(comment="基础重试间隔；下次重试时间 = now + RetryInterval * RetryBackoff^failedCount，且不超过 MaxRetryInterval")
+	// annotation@RetryInterval(comment="[all] 基础重试间隔；下次重试 = now + RetryInterval * RetryBackoff^(failedCount-1)，上限 MaxRetryInterval")
 	RetryInterval time.Duration
-	// annotation@RetryBackoff(comment="重试退避系数，<=1 表示不退避（固定间隔）")
+	// annotation@RetryBackoff(comment="[all] 重试退避系数，<=1 表示不退避（固定间隔）")
 	RetryBackoff float64
-	// annotation@MaxRetryInterval(comment="重试间隔上限")
+	// annotation@MaxRetryInterval(comment="[all] 重试间隔上限")
 	MaxRetryInterval time.Duration
-	// annotation@RetryIntervalFunc(comment="自定义重试间隔函数，传入失败次数（>=1），返回下次重试延迟；非 nil 时优先于 RetryInterval/Backoff")
+	// annotation@RetryIntervalFunc(comment="[all] 自定义重试间隔函数，传入失败次数（>=1），返回下次重试延迟；非 nil 时优先于 RetryInterval/Backoff")
 	RetryIntervalFunc func(failedCount int) time.Duration
-	// annotation@DisableValueIndex(comment="禁用 value->node 索引（内存队列）；启用后 Get/Cancel 不可用，但 Push 性能提升约 40%")
+	// annotation@DisableValueIndex(comment="[memory] 禁用 value->node 索引；启用后 Get/Cancel 不可用，但 Push 性能提升约 40%")
 	DisableValueIndex bool
-	// annotation@PushRatePerSec(comment="Push 限流（每秒允许 token 数），<=0 表示不限流")
+	// annotation@PushRatePerSec(comment="[all] Push 限流（每秒允许 token 数），<=0 表示不限流")
 	PushRatePerSec float64
-	// annotation@PushBurst(comment="Push 限流 burst 容量，<=0 时取 PushRatePerSec 同值")
-	PushBurst float64
-	// annotation@HeartbeatInterval(comment="Redis 队列：handler 执行期间自动延期 doing 集 score 的心跳间隔；<=0 表示不开启心跳，0 = VisibilityTimeout/3")
+	// annotation@PushBurst(comment="[all] Push 限流 burst 容量（token 数），<=0 时取 PushRatePerSec 同值")
+	PushBurst int
+	// annotation@HeartbeatInterval(comment="[redis] handler 执行期间自动延期 doing 集 score 的心跳间隔；<0 禁用；0 = VisibilityTimeout/3（不少于 1s）")
 	HeartbeatInterval time.Duration
+	// annotation@PollInterval(comment="[redis] poll 轮询间隔；<=0 时使用默认值 1s")
+	PollInterval time.Duration
+	// annotation@ReclaimInterval(comment="[redis] reclaim 轮询间隔；<=0 时使用默认值 1s")
+	ReclaimInterval time.Duration
 }
 
 // newConfig new Options
@@ -69,123 +73,151 @@ func (cc *Options) ApplyOption(opts ...Option) {
 // Option option func
 type Option func(cc *Options)
 
-// WithName 名称
+// WithMetricNamespace [all] Prometheus 指标 namespace
+func WithMetricNamespace(v string) Option {
+	return func(cc *Options) {
+		cc.MetricNamespace = v
+	}
+}
+
+// WithName 已废弃，等同于 WithMetricNamespace；保留用于向后兼容
+//
+// Deprecated: 使用 WithMetricNamespace
 func WithName(v string) Option {
+	return WithMetricNamespace(v)
+}
+
+// WithRedisKeyPrefix [redis] Redis key 前缀
+func WithRedisKeyPrefix(v string) Option {
 	return func(cc *Options) {
-		cc.Name = v
+		cc.RedisKeyPrefix = v
 	}
 }
 
-// WithPrefix 前缀
+// WithPrefix 已废弃，等同于 WithRedisKeyPrefix；保留用于向后兼容
+//
+// Deprecated: 使用 WithRedisKeyPrefix
 func WithPrefix(v string) Option {
-	return func(cc *Options) {
-		cc.Prefix = v
-	}
+	return WithRedisKeyPrefix(v)
 }
 
-// WithRedisScriptBuilder redis 脚本工厂
+// WithRedisScriptBuilder [redis] Redis 脚本工厂
 func WithRedisScriptBuilder(v RedisScriptBuilder) Option {
 	return func(cc *Options) {
 		cc.RedisScriptBuilder = v
 	}
 }
 
-// WithRetryTimes 重试次数
+// WithRetryTimes [all] 失败重试上限。0 = 首次失败即死信；<0 = 无限重试
 func WithRetryTimes(v int) Option {
 	return func(cc *Options) {
 		cc.RetryTimes = v
 	}
 }
 
-// WithOnDeadLetter 当有死信
+// WithOnDeadLetter [all] 死信回调
 func WithOnDeadLetter(v func(item *Item)) Option {
 	return func(cc *Options) {
 		cc.OnDeadLetter = v
 	}
 }
 
-// WithMonitorCounter 监控统计函数
+// WithMonitorCounter [all] 监控上报回调
 func WithMonitorCounter(v func(metric string, value int64, labels prometheus.Labels)) Option {
 	return func(cc *Options) {
 		cc.MonitorCounter = v
 	}
 }
 
-// WithLogger 日志实现，默认输出到 stderr
+// WithLogger [all] 日志实现，nil 时使用默认 stderr logger
 func WithLogger(v Logger) Option {
 	return func(cc *Options) {
 		cc.Logger = v
 	}
 }
 
-// WithMaxConcurrency 单 topic 业务处理最大并发 goroutine 数，<=0 表示不限制
+// WithMaxConcurrency [all] 单 topic 业务处理最大并发 goroutine 数，<=0 表示不限制
 func WithMaxConcurrency(v int) Option {
 	return func(cc *Options) {
 		cc.MaxConcurrency = v
 	}
 }
 
-// WithVisibilityTimeout Redis 队列：item 被 poll 拉走后多久未 ack 视为失败被 reclaim
+// WithVisibilityTimeout [redis] item 被 poll 拉走后多久未 ack 视为失败被 reclaim
 func WithVisibilityTimeout(v time.Duration) Option {
 	return func(cc *Options) {
 		cc.VisibilityTimeout = v
 	}
 }
 
-// WithRetryInterval 基础重试间隔
+// WithRetryInterval [all] 基础重试间隔
 func WithRetryInterval(v time.Duration) Option {
 	return func(cc *Options) {
 		cc.RetryInterval = v
 	}
 }
 
-// WithRetryBackoff 重试退避系数，<=1 表示不退避（固定间隔）
+// WithRetryBackoff [all] 重试退避系数，<=1 表示不退避（固定间隔）
 func WithRetryBackoff(v float64) Option {
 	return func(cc *Options) {
 		cc.RetryBackoff = v
 	}
 }
 
-// WithMaxRetryInterval 重试间隔上限
+// WithMaxRetryInterval [all] 重试间隔上限
 func WithMaxRetryInterval(v time.Duration) Option {
 	return func(cc *Options) {
 		cc.MaxRetryInterval = v
 	}
 }
 
-// WithRetryIntervalFunc 自定义重试间隔函数，传入失败次数（>=1），返回下次重试延迟；非 nil 时优先于 RetryInterval/Backoff
+// WithRetryIntervalFunc [all] 自定义重试间隔函数；非 nil 时优先于 RetryInterval/Backoff
 func WithRetryIntervalFunc(v func(failedCount int) time.Duration) Option {
 	return func(cc *Options) {
 		cc.RetryIntervalFunc = v
 	}
 }
 
-// WithDisableValueIndex 禁用 value->node 索引（内存队列）；启用后 Get/Cancel 不可用，但 Push 性能提升约 40%
+// WithDisableValueIndex [memory] 禁用 value->node 索引；启用后 Get/Cancel 不可用，但 Push 性能提升约 40%
 func WithDisableValueIndex(v bool) Option {
 	return func(cc *Options) {
 		cc.DisableValueIndex = v
 	}
 }
 
-// WithPushRatePerSec Push 限流（每秒允许 token 数），<=0 表示不限流
+// WithPushRatePerSec [all] Push 限流（每秒允许 token 数），<=0 表示不限流
 func WithPushRatePerSec(v float64) Option {
 	return func(cc *Options) {
 		cc.PushRatePerSec = v
 	}
 }
 
-// WithPushBurst Push 限流 burst 容量，<=0 时取 PushRatePerSec 同值
-func WithPushBurst(v float64) Option {
+// WithPushBurst [all] Push 限流 burst 容量（token 数），<=0 时取 PushRatePerSec 同值
+func WithPushBurst(v int) Option {
 	return func(cc *Options) {
 		cc.PushBurst = v
 	}
 }
 
-// WithHeartbeatInterval Redis 队列：handler 执行期间自动延期 doing 集 score 的心跳间隔；
-// <0 表示禁用心跳；0（默认）= VisibilityTimeout/3
+// WithHeartbeatInterval [redis] handler 执行期间自动延期 doing 集 score 的心跳间隔；
+// <0 禁用；0 = VisibilityTimeout/3（不少于 1s）
 func WithHeartbeatInterval(v time.Duration) Option {
 	return func(cc *Options) {
 		cc.HeartbeatInterval = v
+	}
+}
+
+// WithPollInterval [redis] poll 轮询间隔；<=0 时使用默认值 1s
+func WithPollInterval(v time.Duration) Option {
+	return func(cc *Options) {
+		cc.PollInterval = v
+	}
+}
+
+// WithReclaimInterval [redis] reclaim 轮询间隔；<=0 时使用默认值 1s
+func WithReclaimInterval(v time.Duration) Option {
+	return func(cc *Options) {
+		cc.ReclaimInterval = v
 	}
 }
 
@@ -200,8 +232,8 @@ func newDefaultOptions() *Options {
 	cc := &Options{}
 
 	for _, opt := range [...]Option{
-		WithName("delayq"),
-		WithPrefix("__dq"),
+		WithMetricNamespace("delayq"),
+		WithRedisKeyPrefix("__dq"),
 		WithRedisScriptBuilder(nil),
 		WithRetryTimes(10),
 		WithOnDeadLetter(nil),
@@ -218,6 +250,8 @@ func newDefaultOptions() *Options {
 		WithPushRatePerSec(0),
 		WithPushBurst(0),
 		WithHeartbeatInterval(0),
+		WithPollInterval(0),
+		WithReclaimInterval(0),
 	} {
 		opt(cc)
 	}
@@ -226,8 +260,8 @@ func newDefaultOptions() *Options {
 }
 
 // all getter func
-func (cc *Options) GetName() string                           { return cc.Name }
-func (cc *Options) GetPrefix() string                         { return cc.Prefix }
+func (cc *Options) GetMetricNamespace() string                { return cc.MetricNamespace }
+func (cc *Options) GetRedisKeyPrefix() string                 { return cc.RedisKeyPrefix }
 func (cc *Options) GetRedisScriptBuilder() RedisScriptBuilder { return cc.RedisScriptBuilder }
 func (cc *Options) GetRetryTimes() int                        { return cc.RetryTimes }
 func (cc *Options) GetOnDeadLetter() func(item *Item)         { return cc.OnDeadLetter }
@@ -243,15 +277,27 @@ func (cc *Options) GetMaxRetryInterval() time.Duration  { return cc.MaxRetryInte
 func (cc *Options) GetRetryIntervalFunc() func(failedCount int) time.Duration {
 	return cc.RetryIntervalFunc
 }
-func (cc *Options) GetDisableValueIndex() bool { return cc.DisableValueIndex }
-func (cc *Options) GetPushRatePerSec() float64           { return cc.PushRatePerSec }
-func (cc *Options) GetPushBurst() float64                { return cc.PushBurst }
-func (cc *Options) GetHeartbeatInterval() time.Duration  { return cc.HeartbeatInterval }
+func (cc *Options) GetDisableValueIndex() bool          { return cc.DisableValueIndex }
+func (cc *Options) GetPushRatePerSec() float64          { return cc.PushRatePerSec }
+func (cc *Options) GetPushBurst() int                   { return cc.PushBurst }
+func (cc *Options) GetHeartbeatInterval() time.Duration { return cc.HeartbeatInterval }
+func (cc *Options) GetPollInterval() time.Duration      { return cc.PollInterval }
+func (cc *Options) GetReclaimInterval() time.Duration   { return cc.ReclaimInterval }
+
+// GetName 已废弃别名，等同于 GetMetricNamespace
+//
+// Deprecated: 使用 GetMetricNamespace
+func (cc *Options) GetName() string { return cc.MetricNamespace }
+
+// GetPrefix 已废弃别名，等同于 GetRedisKeyPrefix
+//
+// Deprecated: 使用 GetRedisKeyPrefix
+func (cc *Options) GetPrefix() string { return cc.RedisKeyPrefix }
 
 // OptionsVisitor visitor interface for Options
 type OptionsVisitor interface {
-	GetName() string
-	GetPrefix() string
+	GetMetricNamespace() string
+	GetRedisKeyPrefix() string
 	GetRedisScriptBuilder() RedisScriptBuilder
 	GetRetryTimes() int
 	GetOnDeadLetter() func(item *Item)
@@ -265,8 +311,10 @@ type OptionsVisitor interface {
 	GetRetryIntervalFunc() func(failedCount int) time.Duration
 	GetDisableValueIndex() bool
 	GetPushRatePerSec() float64
-	GetPushBurst() float64
+	GetPushBurst() int
 	GetHeartbeatInterval() time.Duration
+	GetPollInterval() time.Duration
+	GetReclaimInterval() time.Duration
 }
 
 // OptionsInterface visitor + ApplyOption interface for Options

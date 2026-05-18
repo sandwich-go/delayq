@@ -188,7 +188,7 @@ func newRedisTopicQueue(ctx context.Context, topic string, opts *Options) TopicQ
 		cancelScript:      builder.Build(cancelLua),
 		heartbeatScript:   builder.Build(heartbeatLua),
 	}
-	if prefix := opts.GetPrefix(); len(prefix) > 0 {
+	if prefix := opts.GetRedisKeyPrefix(); len(prefix) > 0 {
 		q.delaySetKey = fmt.Sprintf("%s:%s", prefix, q.delaySetKey)
 		q.doingSetKey = fmt.Sprintf("%s:%s", prefix, q.doingSetKey)
 		q.failedHashKey = fmt.Sprintf("%s:%s", prefix, q.failedHashKey)
@@ -399,16 +399,34 @@ func (q *redisQueue) lengthAll() int64 {
 	return d + dn
 }
 
+// pollInterval 返回 poll 轮询间隔；<=0 时回退到 1s
+func (q *redisQueue) pollInterval() time.Duration {
+	if d := q.opts.GetPollInterval(); d > 0 {
+		return d
+	}
+	return 1 * time.Second
+}
+
+// reclaimInterval 返回 reclaim 轮询间隔；<=0 时回退到 1s
+func (q *redisQueue) reclaimInterval() time.Duration {
+	if d := q.opts.GetReclaimInterval(); d > 0 {
+		return d
+	}
+	return 1 * time.Second
+}
+
 func (q *redisQueue) Start(f func(item *Item) error) error {
-	return q.start(f, ticker{d: 1 * time.Second, f: q.poll}, ticker{d: 1 * time.Second, f: q.reclaim})
+	return q.start(f,
+		ticker{d: q.pollInterval(), f: q.poll},
+		ticker{d: q.reclaimInterval(), f: q.reclaim})
 }
 
 // StartManualAck 启动手动 ack 模式
 func (q *redisQueue) StartManualAck(f func(item *Item, ack Acker)) error {
 	q.manualHandler = f
 	return q.start(func(*Item) error { return nil },
-		ticker{d: 1 * time.Second, f: q.poll},
-		ticker{d: 1 * time.Second, f: q.reclaim})
+		ticker{d: q.pollInterval(), f: q.poll},
+		ticker{d: q.reclaimInterval(), f: q.reclaim})
 }
 
 func (q *redisQueue) runScript(ctx context.Context, s RedisScript, keys []string, args ...interface{}) ([]interface{}, error) {
@@ -477,7 +495,12 @@ func (q *redisQueue) poll() error {
 			p.item.DelaySecond = -failed
 		}
 		// 已达重试上限，直接死信
-		if int(failed) >= q.opts.GetRetryTimes() && q.opts.GetRetryTimes() > 0 {
+		// RetryTimes 语义（与 memq 完全一致）：表示允许的"额外"重试次数（不含首次执行）。
+		// 总执行 = 1 + RetryTimes 次（RetryTimes>=0 时）。
+		//   >0 : 当历史失败次数已经超过 RetryTimes 时，此次不再派发，直接死信
+		//   ==0: 历史失败次数 > 0 即死信（不重试）
+		//   <0 : 永不进入死信（无限重试）
+		if rt := q.opts.GetRetryTimes(); rt >= 0 && int(failed) > rt {
 			q.invokeDeadLetter(p.item)
 			if aerr := q.onSuccess(p.item); aerr != nil {
 				q.log.Errorf("topic=%s ack dead letter error: %v", q.topic, aerr)

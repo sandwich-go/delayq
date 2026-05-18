@@ -87,7 +87,7 @@ func newBaseQueue(ctx context.Context, topic string, opts *Options) *baseQueue {
 		q.sem = make(chan struct{}, n)
 	}
 	if rate := opts.GetPushRatePerSec(); rate > 0 {
-		burst := opts.GetPushBurst()
+		burst := float64(opts.GetPushBurst())
 		if burst <= 0 {
 			burst = rate
 		}
@@ -440,14 +440,22 @@ func newMemoryTopicQueue(ctx context.Context, topic string, opts *Options) Topic
 
 // onFailed 内存队列的失败回调
 // 语义：Item.DelaySecond 为负时，其绝对值作为已失败次数。
-// 达到 RetryTimes 投递死信，否则按 retry 策略计算延迟并重入队列。
+// RetryTimes 语义：
+//
+//	>0 : 失败次数达到 RetryTimes 后投递死信
+//	==0: 首次失败即死信（不重试）
+//	<0 : 永不进入死信（无限重试）
+//
+// 重试延迟由 computeRetryDelay 决定。亚秒延迟通过 time.AfterFunc 旁路时间轮派发，
+// 保证 LowLatencyPreset 等亚秒重试间隔配置真正生效。
 func (q *memQueue) onFailed(item *Item) error {
 	failedCount := 0
 	if item.GetDelaySecond() < 0 {
 		failedCount = int(-item.GetDelaySecond())
 	}
 	failedCount++
-	if failedCount > q.opts.GetRetryTimes() {
+	rt := q.opts.GetRetryTimes()
+	if rt >= 0 && failedCount > rt {
 		q.invokeDeadLetter(item)
 		return nil
 	}
@@ -457,11 +465,50 @@ func (q *memQueue) onFailed(item *Item) error {
 		Value:       item.GetValue(),
 	}
 	delay := computeRetryDelay(q.opts, failedCount)
+	// 亚秒重试：直接 time.AfterFunc 旁路时间轮（时间轮粒度 1s 会把 <1s 截断为 1s）。
+	if delay > 0 && delay < time.Second {
+		return q.scheduleSubSecondRetry(retry, delay)
+	}
 	delaySec := int64(delay / time.Second)
-	if delaySec < 1 {
-		delaySec = 1 // 时间轮粒度为 1s，重试至少等下一个 tick
+	if delaySec < 0 {
+		delaySec = 0
 	}
 	return q.pushRetry(retry, delaySec)
+}
+
+// scheduleSubSecondRetry 在亚秒级延迟后直接派发 item 到 execute（旁路时间轮）。
+// 时间轮粒度 1s 会把 <1s 的 retry delay 截断到下一个 tick，导致 LowLatencyPreset
+// 等亚秒重试间隔不生效；本路径用 time.AfterFunc 解决。
+//
+// 队列关闭时取消 timer 并立即丢弃，返回 nil。
+func (q *memQueue) scheduleSubSecondRetry(item *Item, delay time.Duration) error {
+	if q.isClosed() {
+		return ErrTopicQueueHasClosed
+	}
+	// pendingExec 计入正在等待重试派发的 item，避免 Drain 早退
+	q.pendingExec.Add(1)
+	doneCh := make(chan struct{})
+	t := time.AfterFunc(delay, func() {
+		defer close(doneCh)
+		if q.isClosed() {
+			q.pendingExec.Add(-1)
+			return
+		}
+		// 直接派发到 execute；executeWithPending 会负责 -1 pendingExec 并 +1 inFlight
+		q.executeWithPending(item)
+	})
+	// 队列关闭时立即取消 timer，避免阻塞 close
+	go func() {
+		select {
+		case <-q.exitC:
+			if t.Stop() {
+				// timer 还未触发，回退 pendingExec 计数
+				q.pendingExec.Add(-1)
+			}
+		case <-doneCh:
+		}
+	}()
+	return nil
 }
 
 // pushRetry 按给定 delaySecond 重新入队，不修改 item.DelaySecond 中编码的失败计数

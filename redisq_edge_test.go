@@ -203,7 +203,10 @@ func stubAllScriptsOK(b *fakeScriptBuilder) {
 	}
 }
 
-// TestRedisQueue_Poll_DeadLetterBranch 覆盖 poll 中失败计数已达 RetryTimes 的死信分支
+// TestRedisQueue_Poll_DeadLetterBranch 覆盖 poll 中失败计数已超过 RetryTimes 的死信分支
+//
+// RetryTimes=2 表示允许 2 次额外重试（共执行 3 次）。当历史失败次数 > 2（即 3 次）时，
+// 不再派发，直接进入死信。
 func TestRedisQueue_Poll_DeadLetterBranch(t *testing.T) {
 	b := &fakeScriptBuilder{}
 	var deadCh = make(chan *Item, 1)
@@ -218,9 +221,9 @@ func TestRedisQueue_Poll_DeadLetterBranch(t *testing.T) {
 	b.scripts[idxMove].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
 		return []interface{}{"bad", "0"}, nil
 	}
-	// failedCountScript 返回失败次数已达 2（>= RetryTimes 触发死信）
+	// failedCountScript 返回失败次数 3（> RetryTimes=2 触发死信）
 	b.scripts[idxFailedCount].evalShaFn = func(ctx context.Context, keys []string, args ...interface{}) ([]interface{}, error) {
-		return []interface{}{int64(2)}, nil
+		return []interface{}{int64(3)}, nil
 	}
 	// 其它脚本（包括 ackSuccess）返回成功
 	for _, idx := range []int{idxAdd, idxLength, idxAckSuccess, idxAckFailed} {
@@ -237,8 +240,8 @@ func TestRedisQueue_Poll_DeadLetterBranch(t *testing.T) {
 		if string(it.GetValue()) != "bad" {
 			t.Fatalf("dead letter value mismatch: %s", it.GetValue())
 		}
-		if it.GetDelaySecond() != -2 {
-			t.Fatalf("dead letter item should carry failed count -2, got %d", it.GetDelaySecond())
+		if it.GetDelaySecond() != -3 {
+			t.Fatalf("dead letter item should carry failed count -3, got %d", it.GetDelaySecond())
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("dead letter not triggered")
